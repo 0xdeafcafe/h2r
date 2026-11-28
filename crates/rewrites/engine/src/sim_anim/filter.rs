@@ -66,11 +66,10 @@ const HI: usize = 8;
 /// Bytes the arguments take, popped by `ret 14h`.
 const ARGS: u32 = 0x14;
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// `impl.sim.native.anim`, set by the installer. The kernel runs wherever
-/// the first-person filter port runs; `-impl.sim.native` turns it off
-/// with the group.
+/// On by default: the kernel runs wherever the first-person filter port runs. Off
+/// leaves the register-level path, the tests' reference.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }

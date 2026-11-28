@@ -13,23 +13,18 @@
 //! whole result without writing: the matrices, the cutoff the first pose
 //! initialises, every byte of the dead frame (saved registers, the queue
 //! and its length, the scratch matrix, the leaves' arguments and return
-//! addresses) and the registers at the return. Two consumers:
-//!
-//! - the **arm** ([`enter`], [`audit`]): until the arm has matched
-//!   [`PROVEN_AFTER`] calls with no mismatch, and on every
-//!   [`AUDIT_EVERY`]th call after, the guest runs and its result stands;
-//!   the plan made at entry is compared with what the guest left, counted,
-//!   and the first difference is kept by name. One mismatch ends the
-//!   take-over for good.
-//! - the **body** ([`run`]): the plan is written and the call returns
-//!   without the guest. [`enter`] calls it once the arm is proven. Tests
-//!   and the differential hold it equal to the guest.
+//! addresses) and the registers at the return. The **body** ([`run`])
+//! writes the plan and the call returns without the guest; it answers
+//! every call it can plan. Tests and the differential hold it equal to
+//! the guest, and [`compare`] names the first difference between a plan
+//! and a guest result.
 //!
 //! [`reference`] is the same function as a register-level port through the
 //! exact `sim_native` leaves, one node at a time: the oracle of the engine
 //! tests, and the third arm of the lifted differential.
 //!
-//! The plan declines (the guest runs, nothing is written) when MXCSR is not
+//! The plan declines (nothing is written; the guest runs that call,
+//! counted by [`Decline`] in [`stats`]) when MXCSR is not
 //! masked, nearest and PE-sticky, when an operand is off the fast path,
 //! when the node count is above [`MAX_NODES`], when a queued link or a
 //! visited node's parent is outside the nodes, when the queue would pass
@@ -46,7 +41,6 @@ use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
 use std::ops::Range;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The walk's entry.
@@ -523,145 +517,6 @@ pub fn compare(o: &Outcome, c: &CpuAbi, g: &impl Memory) -> Option<Mismatch> {
         }
     }
     None
-}
-
-/// The arm's counters since start.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ArmStats {
-    /// Calls planned at entry and compared at the return.
-    pub checked: u64,
-    pub matched: u64,
-    pub mismatched: u64,
-    /// Calls the plan declined, by [`Decline`]; the guest ran unchecked.
-    pub declined: [u64; DECLINES],
-    /// Audited calls that could not be compared at the return: the
-    /// return-observer table was full ([`arm_dropped`]).
-    pub dropped: u64,
-    /// The first mismatch seen, with the entry state that produced it.
-    pub first: Option<(Mismatch, CpuAbi)>,
-}
-
-/// Matched calls, with no mismatch ever, before the arm answers calls
-/// itself.
-pub const PROVEN_AFTER: u64 = 4096;
-
-/// After that, one answerable call in this many still goes to the guest
-/// and is compared.
-pub const AUDIT_EVERY: u64 = 64;
-
-struct ArmState {
-    stats: ArmStats,
-    /// Answerable calls since the last map load: the audit slot is chosen
-    /// by this count, so the choice depends on no thread.
-    slot: u64,
-}
-
-static ARM: Mutex<Option<ArmState>> = Mutex::new(None);
-
-fn with_arm<R>(f: impl FnOnce(&mut ArmState) -> R) -> R {
-    let mut guard = ARM.lock().unwrap_or_else(|e| e.into_inner());
-    let state = guard.get_or_insert_with(|| ArmState {
-        stats: ArmStats::default(),
-        slot: 0,
-    });
-    f(state)
-}
-
-pub fn arm_stats() -> ArmStats {
-    with_arm(|a| a.stats.clone())
-}
-
-/// A plan the guest's answer is compared with at the return.
-pub struct Audit {
-    outcome: Outcome,
-    before: CpuAbi,
-}
-
-/// What [`enter`] did with a call.
-pub enum Step {
-    /// The body answered: `c` holds the result; return through the
-    /// transfer.
-    Answered(TransferAbi),
-    /// The guest answers; compare its result with the plan at the return
-    /// ([`audit`]).
-    Audit(Box<Audit>),
-    /// The guest answers alone: the plan declined, counted.
-    Guest,
-}
-
-/// At the entry, before the guest runs: plan the call and decide who
-/// answers. Until the arm has matched [`PROVEN_AFTER`] calls with no
-/// mismatch ever, and on every [`AUDIT_EVERY`]th answerable call after
-/// that, the guest answers and the plan is compared at the return. One
-/// mismatch ends the take-over for good: the guest answers everything
-/// from then on. A declined call is the guest's and never counts as a
-/// match.
-pub fn enter(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Step, GuestFault> {
-    let o = match plan(c, g) {
-        Ok(o) => o,
-        Err(why) => {
-            decline(why);
-            with_arm(|a| a.stats.declined[why as usize] += 1);
-            return Ok(Step::Guest);
-        }
-    };
-    let answer = with_arm(|a| {
-        let slot = a.slot;
-        a.slot += 1;
-        a.stats.mismatched == 0 && a.stats.matched >= PROVEN_AFTER && slot % AUDIT_EVERY != 0
-    });
-    if answer {
-        return apply(o, c, g).map(Step::Answered);
-    }
-    Ok(Step::Audit(Box::new(Audit {
-        outcome: o,
-        before: *c,
-    })))
-}
-
-/// At the return, after the guest ran: compare its result with the plan.
-/// The guest's result stands either way.
-pub fn audit(a: Audit, c: &CpuAbi, g: &impl Memory) {
-    // Compared outside the lock: it reads guest memory.
-    let result = compare(&a.outcome, c, g);
-    with_arm(|s| {
-        s.stats.checked += 1;
-        match result {
-            None => s.stats.matched += 1,
-            Some(m) => {
-                if s.stats.mismatched == 0 {
-                    eprintln!(
-                        "sim: anim graph walk arm: the guest's result differs from the plan \
-                         ({}: plan {}, guest {}); the guest answers every call from here",
-                        m.what, m.plan, m.guest
-                    );
-                }
-                s.stats.mismatched += 1;
-                if s.stats.first.is_none() {
-                    s.stats.first = Some((m, a.before));
-                }
-            }
-        }
-    });
-}
-
-/// An audit whose return could not be observed.
-pub fn arm_dropped() {
-    with_arm(|a| a.stats.dropped += 1);
-}
-
-/// Start the audit slots over (map load, checkpoint revert and restore):
-/// the proof and the counters stay.
-pub fn arm_new_run() {
-    with_arm(|a| a.slot = 0);
-}
-
-/// Drop the arm's counters and slots (tests).
-pub fn arm_reset() {
-    with_arm(|a| {
-        a.stats = ArmStats::default();
-        a.slot = 0;
-    });
 }
 
 /// `call 1421f0` after the caller pushed the record and the scratch.

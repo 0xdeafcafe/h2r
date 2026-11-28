@@ -44,8 +44,8 @@ enum Controls { Integer, Sse, Mixed, Trig, Camera, Weld, World, Memory, Island }
 
 pub struct Port {
     pub point: &'static Point,
-    /// Passed to Switches::implementation, which supplies the impl. prefix.
-    pub switch: &'static str,
+    /// The hook label and shadow name (`sim.port.<name>`); not a switch.
+    pub name: &'static str,
     pub resumes: &'static [u32],
     pub generated_sites: &'static [u32],
     run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
@@ -67,24 +67,27 @@ impl Port {
 
 const fn port(
     point: &'static Point,
-    switch: &'static str,
+    name: &'static str,
     controls: Controls,
     resumes: &'static [u32],
     run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
 ) -> Port {
-    Port { point, switch, controls, resumes, run, generated_sites: &[] }
+    Port { point, name, controls, resumes, run, generated_sites: &[] }
 }
 
 pub const PORTS: &[Port] = {
     use Controls::*;
     use points::*;
     &[
-        // The pose root runs under the pose-matrix switch: it inlines that
-        // leaf and transform composition for the whole skeleton walk.
-        port(&OBJECT_NODE_MATRICES, "sim.native_pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
-        port(&UNIT_AIM_UPDATE, "sim.native_unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
-        port(&FIRST_PERSON_POSE_UPDATE, "sim.native_first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
-        port(&FIRST_PERSON_FILTER_UPDATE, "sim.native_first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
+        // Labels, not switches. A port installs where no subsystem body owns
+        // its point (`sim_bridge::sim_physics`): the first-person pose; the
+        // pose root `bd090` is an object body, the aim and filters anim's.
+        // The pose root inlines the pose matrix and transform composition
+        // for the whole skeleton walk.
+        port(&OBJECT_NODE_MATRICES, "sim.port.pose_matrix", Sse, &node_matrices::SITES, node_matrices::update),
+        port(&UNIT_AIM_UPDATE, "sim.port.unit_aim", Trig, unit_aim::SITES, unit_aim::aim),
+        port(&FIRST_PERSON_POSE_UPDATE, "sim.port.first_person_pose", Mixed, first_person::POSE_SITES, first_person::pose),
+        port(&FIRST_PERSON_FILTER_UPDATE, "sim.port.first_person_filters", Mixed, first_person::FILTER_SITES, first_person::filters),
     ]
 };
 
@@ -121,12 +124,12 @@ pub const PHYSICS_PORTS: &[Port] = {
 /// Ports kept as test oracles only, never installed: the subsystem that
 /// replaces them owns the switch now (docs/engine/sim-rewrite.md section 8).
 /// The additive-layer node evaluator runs under `0x2798a0`, which
-/// `impl.sim.native.anim` replaces whole (docs/engine/anim-sampling.md).
+/// the animation group replaces whole (docs/engine/anim-sampling.md).
 /// The object walks, the per-object updates, change colours, the light
-/// record update and the unit update's shell are bodies under
-/// `impl.sim.native.objects` (`crate::sim_objects`); their `oracle.*` names
+/// record update and the unit update's shell are object bodies
+/// (`crate::sim_objects`); their `oracle.*` names
 /// are labels, not switches. The unit aim port stays in `PORTS` under its
-/// own switch, and the unit movement body runs the same code
+/// label, and the unit movement body runs the same code
 /// (`unit_aim::step`). The observer camera is a seat
 /// (`crate::sim_seats::camera`) under `impl.sim.native.seats`, which
 /// retired its switch.

@@ -68,15 +68,14 @@ mod tests {
     fn every_port() -> impl Iterator<Item = &'static str> {
         let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
         native
-            .chain(engine::sim_physics::PORTS.iter().map(|p| p.switch))
+            .chain(engine::sim_physics::PORTS.iter().map(|p| p.name))
             .chain(engine::sim_seats::SEATS.iter().map(|s| s.name))
             .chain(crate::sim_objects::SHADOW_POINTS.iter().map(|p| p.name))
     }
 
     #[test]
     fn a_plan_registers_every_port_installed_or_not() {
-        let switches = hooks::Switches::defaults().with("impl.sim.native_unit_pose", true);
-        let mut registry = hooks::Registry::new(switches);
+        let mut registry = hooks::Registry::new(hooks::Switches::defaults());
         registry
             .add(&crate::sim_native::SimNative::for_tests())
             .unwrap();
@@ -90,7 +89,7 @@ mod tests {
         let pose = status
             .ports
             .iter()
-            .find(|p| p.name == "sim.native_unit_pose")
+            .find(|p| p.name == "sim.port.unit_pose")
             .unwrap();
         assert_eq!(pose.group, SIM_NATIVE);
     }

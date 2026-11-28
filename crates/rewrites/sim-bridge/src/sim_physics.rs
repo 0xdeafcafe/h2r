@@ -41,35 +41,29 @@ impl Feature for NativePhysics {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(SnapshotPolicy::Stateless);
         for port in PORTS {
-            // A subsystem body owns this entry and its return sites when
-            // selected. The independent port remains a differential oracle.
-            let installed = b.switches().implementation(port.switch, false)
-                && !crate::sim_native::owns_anim(b.switches(), port.point.base)
-                && !crate::sim_objects::owns(b.switches(), port.point.base);
-            crate::shadow::register(port.switch, crate::shadow::SIM_PHYSICS, port.point, installed);
+            // A subsystem body owns this entry and its return sites where
+            // there is one; the independent port remains a differential
+            // oracle there, and is the implementation everywhere else.
+            let installed = !crate::sim_native::owns_anim(port.point.base)
+                && !crate::sim_objects::owns(port.point.base);
+            crate::shadow::register(port.name, crate::shadow::SIM_PHYSICS, port.point, installed);
             if installed {
-                b.raw().implement(port.point, port.switch, move |cpu, ctx, pc| {
+                b.raw().implement(port.point, port.name, move |cpu, ctx, pc| {
                     let resume = pc != port.point.base && port.resumes.contains(&pc);
-                    if pc == port.point.base || resume {
-                        let mut mem = ctx.memory();
-                        if engine::sim_physics::supported(port, cpu, &mem) {
-                            // Entries and resumes alike: each segment is
-                            // checked from the state it starts in.
-                            return crate::shadow::run(port.switch, cpu, &mut mem, pc, &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
-                                port.invoke(cpu, mem, pc)
-                            });
-                        }
+                    if pc != port.point.base && !resume {
+                        return original(cpu, ctx, pc, resume);
                     }
-                    let original = if resume {
-                        ctx.runtime().resolve_original_resume(pc)
-                    } else {
-                        ctx.runtime().resolve_original(pc).map(|h| (h,pc))
-                    };
-                    let (handler,selector) = original.ok_or(runtime::GuestFault {
-                        addr: pc, len: 1, access: runtime::guest::Access::Execute,
-                        reason: runtime::guest::FaultReason::Unmapped,
-                    })?;
-                    Ok(handler.invoke(cpu, ctx, selector))
+                    let mut mem = ctx.memory();
+                    // Outside the float environment the port assumes: counted,
+                    // and the port still answers.
+                    if !engine::sim_physics::supported(port, cpu, &mem) {
+                        count_outside(port.name);
+                    }
+                    // Entries and resumes alike: each segment is checked from
+                    // the state it starts in.
+                    crate::shadow::run(port.name, cpu, &mut mem, pc, &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
+                        port.invoke(cpu, mem, pc)
+                    })
                 }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only()
                     // Inside the light-host skips that share a point.
                     .after_feature("sim-observer-resources");
@@ -80,6 +74,20 @@ impl Feature for NativePhysics {
         }
         Ok(())
     }
+}
+
+/// Calls each standalone port ran outside its float environment, by label.
+static OUTSIDE: std::sync::Mutex<std::collections::BTreeMap<&'static str, u64>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+fn count_outside(name: &'static str) {
+    *OUTSIDE.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+}
+
+/// Every standalone port's count of calls run outside its float
+/// environment, by label (`sim.port.*`).
+pub fn outside_counts() -> Vec<(&'static str, u64)> {
+    OUTSIDE.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(&k, &v)| (k, v)).collect()
 }
 
 /// The original at an entry, or its resume at a site.
@@ -453,10 +461,11 @@ mod tests {
     use engine::sim_physics::PHYSICS_PORTS;
 
     #[test]
-    fn every_simulation_port_is_listed() {
+    fn every_standalone_port_is_a_label_not_a_switch() {
         for port in PORTS {
-            let key = format!("impl.{}", port.switch);
-            assert!(hooks::switches::table::get(&key).is_some(), "{key} is not in the switch table");
+            assert!(port.name.starts_with("sim.port."), "{}", port.name);
+            let key = format!("impl.{}", port.name);
+            assert!(hooks::switches::table::get(&key).is_none(), "{key} is a switch");
         }
     }
 
@@ -482,9 +491,12 @@ mod tests {
         );
         registry.add(&super::NativePhysics).unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
-        // The per-function ports stay off: only the physics switch is on.
+        // A standalone port installs where no subsystem body owns its
+        // point: the first-person pose, alone.
         for port in PORTS {
-            assert!(!plan.chains.contains_key(&port.point.base), "{} installed", port.switch);
+            let installed = plan.chains.get(&port.point.base).and_then(|c| c.implement.as_ref());
+            let free = port.point.base == points::FIRST_PERSON_POSE_UPDATE.base;
+            assert_eq!(installed.map(|h| h.label), free.then_some(port.name), "{}", port.name);
         }
         for port in PHYSICS_PORTS.iter().chain([&engine::sim_physics::ISLAND_INTEGRATE]) {
             let chain = &plan.chains[&port.point.base];
@@ -524,7 +536,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 14,
+            PHYSICS_PORTS.len() + 15,
             "unexpected extra chains"
         );
     }

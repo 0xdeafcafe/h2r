@@ -3,10 +3,10 @@
 //! Host methods: answered where boot's agent glue registers them, so
 //! `session.methods` lists them there.
 //!
-//! Ports are named by their switch (`sim.native_unit_pose`,
-//! `sim.native_unit_aim`), by group (`sim.native`, `sim.physics`) or
-//! as `all`. A port is checked only when it is installed: its `impl.`
-//! switch is on in this run.
+//! Ports are named by their label (`sim.port.unit_pose`,
+//! `sim.port.first_person_pose`), by group (`sim.native`, `sim.physics`)
+//! or as `all`. A port is checked only when it is installed: no
+//! subsystem body owns its point in this run.
 
 use serde::{Deserialize, Serialize};
 

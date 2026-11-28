@@ -1,9 +1,8 @@
 //! `sim.events`: the tick's simulation events (`sim_state::events`,
 //! docs/engine/sim-rewrite-objects.md section 8): objects deleted, damage
 //! applied and kills credited, in the order they happened. Read at a tick
-//! boundary, so they are the last tick's. Deletions are recorded whenever
-//! finalize runs in Rust (by default, with the walk table); damage and
-//! kills only while `impl.sim.native.objects` is on.
+//! boundary, so they are the last tick's. Deletions, damage and kills are
+//! always recorded.
 
 use serde::{Deserialize, Serialize};
 

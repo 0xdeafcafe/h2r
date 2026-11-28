@@ -154,9 +154,8 @@ pub use sim_objects::{Damage, Kill, SimEvent};
 /// This tick's events so far, in the order they happened. Read at tick end
 /// on the game thread: the buffer belongs to the thread that runs the
 /// simulation, and it is cleared when a tick starts (`GAME_TICK`'s entry).
-/// `ObjectDeleted` whenever finalize runs in Rust (by default, with the
-/// walk table); `Damage`, `Kill` and `ActorKilled` only under
-/// `impl.sim.native.objects`.
+/// `ObjectDeleted` from finalize, `Damage`, `Kill` and `ActorKilled` from
+/// the damage report and kill credit; all always recorded.
 pub fn events<R>(f: impl FnOnce(&[SimEvent]) -> R) -> R {
     sim_objects::events::with(f)
 }

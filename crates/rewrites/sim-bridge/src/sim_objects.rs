@@ -1,114 +1,67 @@
-//! `impl.sim.native.objects`: the object update, phase 3 of the simulation
-//! rewrite (docs/engine/object-update.md; design
-//! docs/engine/sim-rewrite-objects.md). Default off. With it off, the
-//! walks and the per-object updates still run in Rust, always
-//! ([`install_walk`]).
+//! The object update, phase 3 of the simulation rewrite
+//! (docs/engine/object-update.md; design docs/engine/sim-rewrite-objects.md),
+//! always installed, with no switch.
 //!
-//! Every body in `engine::sim_objects::BODIES` gets its entry and its
-//! return sites. At either, with the float environment the bodies assume,
-//! `engine::sim_objects::drive` runs it and every body it reaches; anywhere
-//! else the original runs (the entry, or the resume at the site), which
-//! the retail frame the bodies keep makes safe. The per-function ports at
-//! a point a body owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stay
-//! test oracles while the switch is on.
+//! Every body in `engine::sim_objects::BODIES` but the aim update `c7840`
+//! (the animation subsystem's, `crate::sim_native`) gets its entry and its
+//! return sites ([`table`]): the walks, the per-object updates with
+//! `bd090`, the type dispatchers and callbacks with their trees, the wake
+//! leaves, the pose and after-root dispatchers, function values with
+//! their imports, change colours, the damage update, the post-update
+//! shell, lights and the machine's slot `+48` query. At either, the Rust
+//! runs the body and every body it reaches ([`objects::drive_with`]); a
+//! true callout to code with no body is made in place where the runtime
+//! can (`ExecCtx::call_inline`, docs/perf/sim-10x-callouts.md) and the
+//! Rust frame carries on at its site. No body hands a call to its
+//! original: one entered outside the float environment its arithmetic
+//! assumes is counted (`float_env`, `native_walk::Refusal`) and still
+//! answered. The per-function ports at a point a body owns
+//! (`sim_physics::PORTS`, `sim_native::ENTRIES`) stay test oracles.
 //!
 //! A body whose point another feature hooks too (the Halo 1 health
 //! model's `before` and `after` on the damage update) is guarded when the
 //! plan is installed (`hooks::install::guard_shared_bodies`): calls into
-//! it go through its chain, so those hooks run around the body as around
-//! the original.
+//! it go through its chain, so those hooks run around the body.
 //!
 //! The tick's combat events (`sim_state::events`) are recorded by
-//! observers at the damage report and the player kill credit, and
-//! the buffer is emptied at the tick's entry (docs/engine/object-update.md,
-//! "Slice 8 body").
+//! observers at the damage report and the player kill credit, and the
+//! buffer is emptied at the tick's entry (docs/engine/object-update.md,
+//! "Slice 8 body"); finalize records its `ObjectDeleted` events into the
+//! same buffer.
 //!
-//! The function value `bab40` has a shadow arm over the Rust evaluator
-//! (`engine::sim_objects::functions::arm`), on with
-//! `impl.sim.native.objects.functions` ([`FUNCTIONS`]): at each entry the
-//! driver runs, the evaluator answers once proven and is compared until
-//! then, and on one call in 64 after.
-//!
-//! With [`OBJECTS`] off (the default), only the walks
-//! `b6f10`, `b7060` and `b7150`, the per-object updates `bc470` and
-//! `bc820` with `bd090`, the type dispatchers, the wake leaves, and the
-//! unit (`c6b30`), biped (`dd360`, `dd990`), weapon (`fdfb0`), item
-//! (`10b4d0`), vehicle (`efde0`), projectile (`f8de0`), scenery
-//! (`10a2f0`), device (`106790`), machine (`1152e0`), crate (`11bce0`)
-//! and creature (`118700`, `118b80`) callbacks with their trees
-//! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
-//! answers every segment. `bd090` or a type callback outside its float
-//! environment is the one refusal: the guest runs that call, counted as
-//! `float_env`. Every other body is the guest's: the pose and after-root
-//! slots, damage, functions and lights. Finalize records its
-//! `ObjectDeleted` events, so the tick's entry empties the buffer here too;
-//! the combat observers are the objects switch's. With the animation
-//! subsystem on, the aim update `c7840` is its (`native_walk::WITHOUT_AIM`),
-//! as in `table`.
+//! The function value `bab40` runs the Rust evaluator
+//! (`engine::sim_objects::functions::arm`) over its register-level body:
+//! the evaluator answers once proven against the body, which answers
+//! until then. The tag-function curve evaluator `13b390` is the kernel's
+//! ([`install_curve_arm`]).
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The arms'
-//! Rust-owned data and proofs are the map's, rebuilt after a map load.
+//! Rust-owned data and counters are the map's, cleared after a map load.
 use hooks::Builder;
 use engine::points;
 use engine::sim_objects::native_walk::{self, Refusal};
 use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, Fallback, Guest, GuestFault, Inline, TransferAbi};
+use std::sync::LazyLock;
 
-/// The switch, without its `impl.` prefix, and the label of the bodies'
-/// implementations.
+/// The label of the bodies' implementations.
 pub const OBJECTS: &str = "sim.native.objects";
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    switches.implementation(OBJECTS, false)
-}
-
-/// The function value's shadow arm, looked up exactly: it is on only when
-/// set, and only under [`OBJECTS`]. Off by default until the parity ladder
-/// passes (docs/engine/sim-rewrite.md, "Objects and units update (phase
-/// 3)").
-pub const FUNCTIONS: &str = "impl.sim.native.objects.functions";
-
-pub fn functions_on(switches: &hooks::Switches) -> bool {
-    on(switches) && switches.feature(FUNCTIONS, false)
-}
-
-/// The label of the walk table's implementations.
-pub const WALK_LABEL: &str = "sim.native.objects.walk";
-
-/// Whether the walk table is installed on its own (docs/engine/object-update.md,
-/// "The walks in Rust"): always, unless [`OBJECTS`] is on and installs
-/// every body, these among them. No switch runs the guest's walks; a body
-/// the Rust refuses is counted and the guest runs that call.
-pub fn walk_on(switches: &hooks::Switches) -> bool {
-    !on(switches)
-}
-
-/// Whether the per-function port at `addr` stands down: a body installed
-/// by either switch owns the point.
-pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
-    owns_in(on(switches), table(switches), addr) || (walk_on(switches) && walk_table(switches).owns(addr))
-}
-
-fn owns_in(on: bool, table: &Table, addr: u32) -> bool {
-    on && table.owns(addr)
-}
-
-// Both registration and the fused call/return driver must agree on who
-// handles c7840. Removing it from this table also sends its callers
-// through normal dispatch when the image lacks the animation selectors.
-fn table(switches: &hooks::Switches) -> &'static Table {
-    static WITHOUT_AIM: std::sync::LazyLock<Table> = std::sync::LazyLock::new(|| {
+/// The installed bodies: every body but the aim update `c7840`, with the
+/// float-free ones marked (`native_walk::FLOAT_FREE`).
+pub fn table() -> &'static Table {
+    static TABLE: LazyLock<Table> = LazyLock::new(|| {
         Table::new(objects::BODIES.iter().filter(|b| b.point.base != points::UNIT_AIM_UPDATE.base))
             .expect("BODIES is consistent")
+            .float_free(native_walk::FLOAT_FREE)
     });
-    if crate::sim_native::anim_on(switches) { &WITHOUT_AIM } else { &objects::TABLE }
+    &TABLE
 }
 
-// The walk table makes the same hand-off: with the animation subsystem on,
-// c7840 is its hook, and c60c0's call to it is a callout.
-fn walk_table(switches: &hooks::Switches) -> &'static Table {
-    if crate::sim_native::anim_on(switches) { &native_walk::WITHOUT_AIM } else { &native_walk::TABLE }
+/// Whether a body owns `addr`, so the per-function port there stands down.
+pub fn owns(addr: u32) -> bool {
+    table().owns(addr)
 }
 
 // Each listed segment reads or writes only its CpuAbi and Guest. Bodies
@@ -124,55 +77,46 @@ pub(crate) const SHADOW_POINTS: &[&points::Point] = &[
 ];
 
 pub(crate) fn install(b: &mut Builder) {
-    let installed = on(b.switches());
-    let bodies = table(b.switches());
+    let bodies = table();
     for point in SHADOW_POINTS {
-        crate::shadow::register(point.name, OBJECTS, point, installed && bodies.owns(point.base));
+        crate::shadow::register(point.name, OBJECTS, point, bodies.owns(point.base));
     }
-    if walk_on(b.switches()) {
-        install_walk(b);
-    }
-    if installed {
-        let arm = functions_on(b.switches());
-        install_table_with(b, bodies, OBJECTS, |_| &[], arm);
-        install_events(b);
-        install_curve_arm(b);
-        // The arm's proof is the map's: a new map earns it again.
-        b.raw().observe_before(&points::CACHE_TAGS_LOAD, CURVE_ARM_RESET, |_| {
-            engine::sim_objects::functions::parity::reset()
-        });
-        if arm {
-            // So are the function arm's proof and its Rust-owned data.
-            b.raw().observe_before(&points::CACHE_TAGS_LOAD, FUNCTION_ARM_RESET, |_| {
-                engine::sim_objects::functions::arm::reset()
-            });
-        }
-    }
+    install_bodies(b, bodies);
+    install_events(b);
+    install_curve_arm(b);
+    // The arms' data and counters are the map's: a new map starts over.
+    b.raw().observe_before(&points::CACHE_TAGS_LOAD, CURVE_ARM_RESET, |_| {
+        engine::sim_objects::functions::parity::reset()
+    });
+    b.raw().observe_before(&points::CACHE_TAGS_LOAD, FUNCTION_ARM_RESET, |_| {
+        engine::sim_objects::functions::arm::reset()
+    });
 }
 
-/// The map-load observer that clears the curve arm's proof.
+/// The map-load observer that clears the curve evaluator's counters.
 const CURVE_ARM_RESET: &str = "objects: reset the curve arm";
 /// The map-load observer that clears the function arm and its data.
 const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
-/// The walk table's bodies ([`walk_table`]), each entry and site answered
-/// by the Rust: [`objects::drive_with`] fuses every transfer between them
-/// and counts each segment. A body outside the float
-/// environment it needs (`bd090`, the type callbacks) is refused for that
-/// call, counted, and the guest runs it; the caller's Rust frame resumes
-/// at its site. The walks and the per-object updates never refuse, so
-/// their hooks are marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
-/// Finalize's body appends the tick's `ObjectDeleted` events, so the
-/// buffer is emptied at the tick's entry ([`install_events_clear`]).
-fn install_walk(b: &mut Builder) {
-    install_events_clear(b);
-    let table = walk_table(b.switches());
+
+/// Every body of `table`, each entry and site answered by the Rust
+/// ([`segment`]). The walks and the per-object updates are also marked
+/// [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
+fn install_bodies(b: &mut Builder, table: &'static Table) {
     for &body in table.bodies() {
         let point = body.point;
         let hook = b
             .raw()
-            .implement(point, WALK_LABEL, move |cpu, ctx, pc| walk_segment(cpu, ctx, table, pc, body.sites))
+            .implement(point, OBJECTS, move |cpu, ctx, pc| {
+                let site = pc != point.base && body.sites.contains(&pc);
+                if pc != point.base && !site {
+                    return original(cpu, ctx, pc, site);
+                }
+                segment(cpu, ctx, table, pc, site)
+            })
             .resumes(body.sites)
             .context_only()
+            // Another feature hooks this point too: calls go through the
+            // chain (`hooks::install::guard_shared_bodies`).
             .when_shared(move |entry| {
                 table.guard(entry);
             });
@@ -182,31 +126,31 @@ fn install_walk(b: &mut Builder) {
     }
 }
 
-/// One entry or site of a body of the walk table `table` at `pc`: the
-/// Rust runs it and every body it reaches, and carries on after each true
-/// callout the runtime makes in place ([`drive_in_place`]); a refused one
-/// is the guest's. Each callout is counted ([`native_walk::callout`]).
-fn walk_segment(
+/// One entry or site of a body of `table` at `pc`: the Rust runs it and
+/// every body it reaches, and carries on after each true callout the
+/// runtime makes in place ([`drive_in_place`]). A float environment off
+/// the body's is counted (`float_env`) and the Rust still answers. Each
+/// callout is counted ([`native_walk::callout`]).
+fn segment(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     table: &'static Table,
     pc: u32,
-    sites: &[u32],
+    site: bool,
 ) -> Result<TransferAbi, GuestFault> {
     drive_in_place(
         cpu,
         ctx,
         table,
         pc,
-        sites.contains(&pc),
+        site,
         |cpu, pc| {
-            let ok = table.supports_at(pc, cpu);
-            if !ok {
+            if !table.supports_at(pc, cpu) {
                 native_walk::refused(pc, Refusal::FloatEnv);
             }
-            ok
+            true
         },
-        |cpu, g, pc| objects::drive_with(cpu, g, table, pc, native_walk::segment),
+        |cpu, g, pc| drive(cpu, g, table, pc, &crate::shadow::SHADOW),
         native_walk::callout,
     )
 }
@@ -217,10 +161,11 @@ fn walk_segment(
 /// at its site, until a transfer leaves for the runner: a return or tail
 /// jump out of the table, or a callout the runtime left to it (`note`
 /// hears each callout's site and why). Where `admit` refuses the Rust at
-/// `pc` the original runs, at its resume when `pc` is a site: as the
-/// runner would have entered this hook at the site and been refused.
-/// Only a call to a body site is made in place, so the runner's resume
-/// registration is the one a fallback returns through.
+/// `pc` the original runs, at its resume when `pc` is a site (only the
+/// sound table, `crate::sim_sound`, refuses; the object bodies' `admit`
+/// counts and admits). Only a call to a body site is made in place, so
+/// the runner's resume registration is the one a fallback returns
+/// through.
 fn drive_in_place(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
@@ -257,13 +202,10 @@ fn drive_in_place(
 }
 
 /// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
-/// idiomatic kernel predicts every call, and
-/// `engine::sim_objects::functions::parity::enter` decides who answers.
-/// Until the arm has matched enough guest answers with no mismatch, the
-/// guest answers and the kernel's prediction is compared at the return
-/// (`ExecCtx::observe_guest_return`); after, the kernel answers and one
-/// call in `AUDIT_EVERY` is still compared. A declined call (float
-/// environment, curve kinds 9 and 10, a faulting read) is the guest's.
+/// idiomatic kernel answers every call
+/// (`engine::sim_objects::functions::parity::enter`). A call it cannot
+/// take (the float environment, curve kinds 9 and 10, a faulting read)
+/// is the guest's, counted by reason.
 fn install_curve_arm(b: &mut Builder) {
     use engine::sim_objects::functions::parity::{self, Step};
     let point = &points::FUNCTION_EVALUATE;
@@ -274,14 +216,8 @@ fn install_curve_arm(b: &mut Builder) {
                     let mem = ctx.memory();
                     parity::enter(cpu, &mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        // Compared at the guest's return; a full observer
-                        // table leaves the call uncompared.
-                        ctx.observe_guest_return(cpu, parity::ARGS, move |c, _| parity::compare(prediction, c));
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -290,22 +226,21 @@ fn install_curve_arm(b: &mut Builder) {
         .optional();
 }
 
+/// Run the body at `pc` and every body it reaches in `table`, each
+/// segment counted (`native_walk::segment`). At `bab40`'s entry the
+/// function arm may answer first; a shadowed point runs through `shadow`.
 fn drive(
     cpu: &mut CpuAbi,
     g: &mut Guest,
     table: &Table,
     pc: u32,
     shadow: &crate::shadow::Shadow,
-    arm: bool,
 ) -> objects::Result<TransferAbi> {
+    use engine::sim_objects::functions::arm::{self as function_arm, Step};
     let shadowed = shadow.any_enabled();
-    if !shadowed && !arm {
-        return objects::drive(cpu, g, table, pc);
-    }
     objects::drive_with(cpu, g, table, pc, |body, cpu, g, pc| {
-        let value = arm && body.point.base == points::OBJECT_FUNCTION_VALUE.base;
+        let value = body.point.base == points::OBJECT_FUNCTION_VALUE.base;
         if value && pc == body.point.base {
-            use engine::sim_objects::functions::arm::{self as function_arm, Step};
             if let Step::Answered { target } = function_arm::enter(cpu, g) {
                 return Ok(TransferAbi::ret(target));
             }
@@ -315,10 +250,10 @@ fn drive(
                 body.segment(cpu, g, pc)
             })?
         } else {
-            body.segment(cpu, g, pc)?
+            native_walk::segment(body, cpu, g, pc)?
         };
         if value && transfer.kind == runtime::abi::RETURN {
-            engine::sim_objects::functions::arm::returned(cpu, g);
+            function_arm::returned(cpu, g);
         }
         Ok(transfer)
     })
@@ -326,7 +261,7 @@ fn drive(
 
 /// The event observers. They write only the game thread's event buffer.
 fn install_events(b: &mut Builder) {
-    install_events_clear(b);
+    b.raw().observe_before(&points::GAME_TICK, EVENTS_CLEAR, |_| damage::tick_starts());
     b.raw()
         .observe_before(&points::DAMAGE_REPORT, "events: damage", |o| {
             if let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim")) {
@@ -339,58 +274,40 @@ fn install_events(b: &mut Builder) {
     });
 }
 
-/// The tick's event buffer is emptied at `GAME_TICK`'s entry, so at tick
-/// end it holds that tick's events.
-fn install_events_clear(b: &mut Builder) {
-    b.raw().observe_before(&points::GAME_TICK, EVENTS_CLEAR, |_| damage::tick_starts());
-}
-
-/// The observer [`install_events_clear`] adds.
+/// The tick-entry observer that empties the event buffer.
 const EVENTS_CLEAR: &str = "events: tick";
 
-/// The chains [`install_walk`] adds to a plan: one per walk body and the
-/// event clear at `GAME_TICK`.
+/// The chains [`install`] adds to a plan: one per body, the curve
+/// evaluator, and the observers at `GAME_TICK`, `DAMAGE_REPORT`,
+/// `PLAYER_KILLED` and `CACHE_TAGS_LOAD`.
 #[cfg(test)]
-pub(crate) fn walk_chains() -> usize {
-    native_walk::TABLE.bodies().len() + 1
+pub(crate) fn object_chains() -> usize {
+    table().bodies().len() + 1 + 4
 }
 
-/// [`walk_chains`] with the animation subsystem on: its table lacks the
-/// aim update `c7840`.
+/// `plan` without what [`install`] adds, for a test that installs on a
+/// runtime holding only its own bodies' exports.
 #[cfg(test)]
-pub(crate) fn walk_chains_without_aim() -> usize {
-    native_walk::WITHOUT_AIM.bodies().len() + 1
-}
-
-/// `plan` without what [`install_walk`] adds, for a test that installs on
-/// a runtime holding only its own bodies' exports.
-#[cfg(test)]
-pub(crate) fn without_walk(plan: &mut hooks::Plan) {
+pub(crate) fn without_objects(plan: &mut hooks::Plan) {
     for chain in plan.chains.values_mut() {
-        if chain.implement.as_ref().is_some_and(|h| h.label == WALK_LABEL) {
+        if chain.implement.as_ref().is_some_and(|h| h.label == OBJECTS) {
             chain.implement = None;
         }
-        chain.observe_before.retain(|h| h.label != EVENTS_CLEAR);
+        chain.observe_before.retain(|h| {
+            ![EVENTS_CLEAR, "events: damage", "events: kill", CURVE_ARM_RESET, FUNCTION_ARM_RESET].contains(&h.label)
+        });
     }
     plan.chains.retain(|_, c| c.hooks().next().is_some());
 }
 
+/// Install `table`'s bodies under `label`, each call admitted only inside
+/// the table's float environment (else the original runs), for a table
+/// that is not the object update's (`crate::sim_sound`).
 pub(crate) fn install_table(
     b: &mut Builder,
     table: &'static Table,
     label: &'static str,
     generated_sites: fn(u32) -> &'static [u32],
-) {
-    install_table_with(b, table, label, generated_sites, false);
-}
-
-/// [`install_table`], with the function value's arm when `arm`.
-fn install_table_with(
-    b: &mut Builder,
-    table: &'static Table,
-    label: &'static str,
-    generated_sites: fn(u32) -> &'static [u32],
-    arm: bool,
 ) {
     for &body in table.bodies() {
         let point = body.point;
@@ -407,15 +324,13 @@ fn install_table_with(
                     pc,
                     site,
                     |cpu, _| table.supports(cpu),
-                    |cpu, g, pc| drive(cpu, g, table, pc, &crate::shadow::SHADOW, arm),
+                    |cpu, g, pc| drive(cpu, g, table, pc, &crate::shadow::SHADOW),
                     |_, _| {},
                 )
             })
             .resumes(body.sites)
             .generated_resumes(generated_sites(point.base))
             .context_only()
-            // Another feature hooks this point too: calls go through the
-            // chain (`hooks::install::guard_shared_bodies`).
             .when_shared(move |entry| {
                 table.guard(entry);
             });
@@ -505,7 +420,7 @@ mod tests {
             g.set_u32(STACK, 0xabcd).unwrap();
             let mut cpu = CpuAbi { esp: STACK, ..Default::default() };
             let before = CALLS.load(Ordering::Relaxed);
-            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow, false).unwrap();
+            let transfer = drive(&mut cpu, &mut g, &table, START.base, &shadow).unwrap();
             assert_eq!(CALLS.load(Ordering::Relaxed) - before, 1);
             assert_eq!(transfer, TransferAbi::ret(0xabcd));
             assert_eq!((cpu.esp, cpu.eax), (STACK + 4, 27));
@@ -521,36 +436,35 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_off_by_default_and_installs_every_body_when_on() {
-        assert!(!on(&Switches::defaults()));
-        assert!(on(&Switches::defaults().with(&format!("impl.{OBJECTS}"), true)));
-        // `-impl.sim.native` turns every subsystem off.
-        assert!(!on(&Switches::defaults().with("impl.sim.native", false)));
-        assert!(!objects::TABLE.is_empty());
+    fn every_body_but_the_aim_update_installs_with_its_sites() {
         let mut registry = Registry::new(Switches::defaults());
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        // The default-on animation manager arms install their own entries;
-        // none of them is an object body. Only the walk table's are.
-        for body in objects::BODIES {
-            let implement = plan.chains.get(&body.point.base).and_then(|c| c.implement.as_ref());
-            let walk = native_walk::TABLE.owns(body.point.base);
-            assert_eq!(implement.map(|i| i.label), walk.then_some(WALK_LABEL), "off: {}", body.point.name);
-        }
-        // The manager keeps the "sim-native" section; it holds no bytes.
-        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
-
-        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for body in objects::BODIES {
             let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
+            if body.point.base == points::UNIT_AIM_UPDATE.base {
+                assert_eq!(implement.label, crate::sim_native::ANIM, "the animation subsystem's");
+                continue;
+            }
             assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
             assert_eq!(implement.continuation_sites().0, body.sites);
+            assert_eq!(
+                implement.replaces_guest(),
+                native_walk::REPLACES_GUEST.contains(&body.point.base),
+                "{}",
+                body.point.name
+            );
         }
-        // The bodies hold no state: no snapshot section.
-        // The manager keeps the "sim-native" section; it holds no bytes.
+        // The bodies hold no state; the manager keeps the "sim-native"
+        // section, with no bytes.
         assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
+        // Every walk entry has resume sites, so the lift keeps its body.
+        let entries: std::collections::BTreeSet<u32> = native_walk::TABLE.bodies().iter().map(|b| b.point.base).collect();
+        assert!(plan.replaced(&entries).is_empty());
+        // The switches are gone.
+        for gone in ["impl.sim.native.objects", "impl.sim.native.objects.functions"] {
+            assert!(Switches::parse(gone).is_err(), "{gone}");
+        }
     }
 
     #[test]
@@ -568,28 +482,31 @@ mod tests {
     }
 
     #[test]
-    fn ports_at_owned_points_stand_down_only_while_the_switch_is_on() {
-        let t = test_table();
-        let owned: [&Point; 2] = [&points::OBJECTS_PRE_PHYSICS, &points::OBJECT_FUNCTION_VALUE];
-        for point in owned {
-            assert!(owns_in(true, t, point.base));
-            assert!(!owns_in(false, t, point.base));
+    fn ports_at_owned_points_stand_down() {
+        for point in [
+            &points::OBJECTS_PRE_PHYSICS,
+            &points::OBJECT_FUNCTION_VALUE,
+            &points::OBJECT_DAMAGE_UPDATE,
+            &points::LIGHTS_UPDATE,
+            &points::LIGHT_RECORD_UPDATE,
+            &points::OBJECT_TYPE_POSE,
+            &points::OBJECT_TYPE_AFTER_ROOT,
+            &points::MACHINE_SLOT_48,
+            &points::UNIT_UPDATE,
+            &points::ITEM_UPDATE,
+        ] {
+            assert!(owns(point.base), "{}", point.name);
         }
-        assert!(!owns_in(true, t, points::OBJECTS_POST_PHYSICS.base));
+        // The aim update is the animation subsystem's.
+        assert!(!owns(points::UNIT_AIM_UPDATE.base));
         // A site is not an entry: the port there is not displaced by it.
-        assert!(!owns_in(true, t, PRE_SITES[0]));
-        // The slice 1 bodies own the walks while the switch is on, and the
-        // walk table owns them otherwise: it always installs.
-        let on = Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
-        assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
-        assert!(owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
-        assert!(owns(&Switches::defaults(), points::UNIT_UPDATE.base));
-        assert!(owns(&Switches::defaults(), points::ITEM_UPDATE.base));
+        let site = objects::TABLE.at(points::OBJECTS_PRE_PHYSICS.base).unwrap().0.sites[0];
+        assert!(!owns(site));
     }
 
     #[test]
-    fn the_switch_records_events_at_the_tick_the_damage_report_and_the_kill() {
-        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+    fn events_are_recorded_at_the_tick_the_damage_report_and_the_kill() {
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for (point, label) in [
@@ -603,17 +520,13 @@ mod tests {
     }
 
     #[test]
-    fn the_function_arm_is_off_unless_set_under_the_objects_switch() {
-        let objects_on = || Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
-        assert!(!functions_on(&objects_on()), "the objects switch alone leaves it off");
-        assert!(!functions_on(&Switches::defaults().with(FUNCTIONS, true)), "it needs the objects switch");
-        assert!(functions_on(&objects_on().with(FUNCTIONS, true)));
-        for (switches, armed) in [(objects_on(), false), (objects_on().with(FUNCTIONS, true), true)] {
-            let mut registry = Registry::new(switches);
-            registry.add(&SimNative::for_tests()).unwrap();
-            let plan = registry.build(&Base).unwrap();
-            let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
-            assert_eq!(load.observe_before.iter().any(|h| h.label == FUNCTION_ARM_RESET), armed);
+    fn a_map_load_resets_both_arms() {
+        let mut registry = Registry::new(Switches::defaults());
+        registry.add(&SimNative::for_tests()).unwrap();
+        let plan = registry.build(&Base).unwrap();
+        let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
+        for label in [CURVE_ARM_RESET, FUNCTION_ARM_RESET] {
+            assert!(load.observe_before.iter().any(|h| h.label == label), "{label}");
         }
     }
 
@@ -643,7 +556,7 @@ mod tests {
         cpu.x87.control = 0x027f;
         let shadow = crate::shadow::Shadow::new();
         let value = points::OBJECT_FUNCTION_VALUE.base;
-        let transfer = drive(&mut cpu, &mut g, &objects::TABLE, value, &shadow, true).unwrap();
+        let transfer = drive(&mut cpu, &mut g, &objects::TABLE, value, &shadow).unwrap();
         assert_eq!(transfer, TransferAbi::ret(0x0001_2345));
         assert_eq!(g.u32(OUT).unwrap(), 1.0f32.to_bits());
         let s = arm::status();
@@ -652,10 +565,8 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_installs_the_curve_evaluators_capture_arm() {
-        // On: the curve evaluator's point is implemented by the arm, which
-        // answers or hands the call to the original.
-        let mut registry = Registry::new(Switches::defaults().with(&format!("impl.{OBJECTS}"), true));
+    fn the_curve_evaluator_is_the_kernels() {
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let chain = &plan.chains[&points::FUNCTION_EVALUATE.base];
@@ -664,118 +575,45 @@ mod tests {
         assert!(implement.optional);
         assert!(chain.observe_before.is_empty() && chain.observe_after.is_empty());
         assert!(implement.continuation_sites().0.is_empty());
-        // The map load clears the arm's proof.
-        let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
-        assert!(load.observe_before.iter().any(|h| h.label == CURVE_ARM_RESET));
-        // Off: nothing installs.
-        let mut registry = Registry::new(Switches::defaults());
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert!(!plan.chains.contains_key(&points::FUNCTION_EVALUATE.base));
     }
 
     #[test]
-    fn the_walk_table_always_installs_and_gives_way_to_the_objects_switch() {
-        let objects_on = || Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
-        assert!(walk_on(&Switches::defaults()));
-        assert!(!walk_on(&objects_on()), "the objects switch installs every body instead");
-        for off in ["impl.sim.native.objects", "impl.sim.native", "impl.sim"] {
-            assert!(walk_on(&Switches::defaults().with(off, false)), "-{off}");
-        }
+    fn damage_functions_lights_and_the_pose_dispatchers_are_rust_bodies() {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        for body in native_walk::TABLE.bodies() {
-            let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
-            assert_eq!(implement.label, WALK_LABEL, "{}", body.point.name);
-            assert_eq!(implement.continuation_sites().0, body.sites);
-            assert_eq!(
-                implement.replaces_guest(),
-                native_walk::REPLACES_GUEST.contains(&body.point.base),
-                "{}",
-                body.point.name
-            );
-            assert!(owns(&Switches::defaults(), body.point.base));
-        }
-        // Finalize never refuses; the multiplayer types' callbacks are the
-        // walk table's and refuse outside their float environment.
-        let finalize = plan.chains[&points::OBJECTS_FINALIZE.base].implement.as_ref().unwrap();
-        assert!(finalize.label == WALK_LABEL && finalize.replaces_guest());
         for point in [
-            &points::UNIT_UPDATE,
-            &points::BIPED_UPDATE,
-            &points::BIPED_POST_UPDATE,
-            &points::WEAPON_UPDATE,
-            &points::ITEM_UPDATE,
-            &points::VEHICLE_UPDATE,
-            &points::PROJECTILE_UPDATE,
-            &points::SCENERY_UPDATE,
-            &points::DEVICE_UPDATE,
-            &points::MACHINE_UPDATE,
-            &points::CRATE_UPDATE,
-            &points::CREATURE_UPDATE,
-            &points::CREATURE_POST_UPDATE,
-            &points::UNIT_CLAMP_DIRECTION,
-            &points::UNIT_ANIMATION_STATE,
-        ] {
-            let implement = plan.chains[&point.base].implement.as_ref().unwrap();
-            assert_eq!(implement.label, WALK_LABEL, "{}", point.name);
-            assert!(!implement.replaces_guest(), "{} refuses outside its float environment", point.name);
-        }
-        // Finalize's deletion events are emptied at the tick's entry; the
-        // combat observers are the objects switch's.
-        let tick = &plan.chains[&points::GAME_TICK.base];
-        assert!(tick.observe_before.iter().any(|h| h.label == EVENTS_CLEAR));
-        let damage = plan.chains.get(&points::DAMAGE_REPORT.base);
-        assert!(damage.is_none_or(|c| !c.observe_before.iter().any(|h| h.label == "events: damage")));
-        // The machine's slot `+48` query, damage and functions are the
-        // guest's.
-        for point in [
-            &points::MACHINE_SLOT_48,
             &points::OBJECT_DAMAGE_UPDATE,
             &points::OBJECT_FUNCTION_VALUE,
-            &points::FUNCTION_EVALUATE,
+            &points::LIGHTS_UPDATE,
+            &points::LIGHT_RECORD_UPDATE,
+            &points::OBJECT_TYPE_POSE,
+            &points::OBJECT_TYPE_AFTER_ROOT,
+            &points::MACHINE_SLOT_48,
         ] {
-            let implement = plan.chains.get(&point.base).and_then(|c| c.implement.as_ref());
-            assert!(implement.is_none(), "{}", point.name);
-            assert!(!owns(&Switches::defaults(), point.base), "{}", point.name);
+            let implement = plan.chains[&point.base].implement.as_ref().unwrap();
+            assert_eq!(implement.label, OBJECTS, "{}", point.name);
         }
-        // No state.
-        assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
-        // Every walk entry has resume sites, so the lift keeps its body.
-        let entries: std::collections::BTreeSet<u32> = native_walk::TABLE.bodies().iter().map(|b| b.point.base).collect();
-        assert!(plan.replaced(&entries).is_empty());
-        // With the objects switch on, every body is the objects switch's.
-        let mut registry = Registry::new(objects_on());
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        for body in native_walk::TABLE.bodies() {
-            let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
-            assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
-        }
+        // Finalize's deletion events and the combat events are emptied at
+        // the tick's entry.
+        let tick = &plan.chains[&points::GAME_TICK.base];
+        assert!(tick.observe_before.iter().any(|h| h.label == EVENTS_CLEAR));
     }
 
     /// Outside the float environment, the root leaf `baf80` (float-free)
-    /// is still the Rust's and counted, and `bd090` is refused to the
-    /// guest, counted as `float_env`.
+    /// is the Rust's and counted as a segment, and `bd090` is the Rust's
+    /// too, counted as `float_env`; the guest runs neither.
     #[test]
-    fn a_walk_body_answers_outside_the_float_environment_and_bd090_is_refused() {
+    fn a_body_answers_outside_the_float_environment_and_counts_it() {
         use runtime::guest::Permissions;
         use runtime::{Dispatch, Runtime};
-        use std::sync::atomic::{AtomicU64, Ordering};
         const STACK: u32 = 0x0057_0800;
         const CALLER: u32 = 0x0001_2345;
-        static GUEST: AtomicU64 = AtomicU64::new(0);
         let pose = points::OBJECT_NODE_MATRICES.base;
         let root = points::OBJECT_ROOT.base;
         let mut d = Dispatch::default();
-        d.register_generated_rust(pose, move |cpu, ctx, pc| {
-            assert_eq!(pc, pose);
-            GUEST.fetch_add(1, Ordering::Relaxed);
-            ctx.memory().ret(cpu, 4)
-        })
-        .unwrap();
-        d.register_generated_rust(root, |_, _, _| panic!("the root leaf never refuses")).unwrap();
+        d.register_generated_rust(pose, |_, _, _| panic!("bd090 is never the guest's")).unwrap();
+        d.register_generated_rust(root, |_, _, _| panic!("the root leaf is never the guest's")).unwrap();
         let mut g = Guest::new();
         g.map_zeroed(0x0057_0000, 0x1000, Permissions::RW).unwrap();
         g.set_u32(STACK, CALLER).unwrap();
@@ -787,18 +625,18 @@ mod tests {
             cpu.x87.control = 0x027f;
             cpu
         };
-        let before = (count(root), count(pose), GUEST.load(Ordering::Relaxed));
+        let before = (count(root), count(pose));
         let mut cpu = ftz();
-        let t = walk_segment(&mut cpu, &mut ctx, &native_walk::TABLE, root, &[]).unwrap();
+        let t = segment(&mut cpu, &mut ctx, table(), root, false).unwrap();
         assert_eq!(t, TransferAbi::ret(CALLER));
         assert_eq!((cpu.eax, cpu.esp), (u32::MAX, STACK + 4));
         assert_eq!(count(root).segments, before.0.segments + 1);
+        assert_eq!(count(root).refused, before.0.refused, "float-free");
+        // bd090 on an object pool the guest does not map: the Rust body
+        // runs, and faults or calls out, but never enters its original.
         let mut cpu = ftz();
-        walk_segment(&mut cpu, &mut ctx, &native_walk::TABLE, pose, &[]).unwrap();
-        assert_eq!(GUEST.load(Ordering::Relaxed), before.2 + 1);
-        let after = count(pose);
-        assert_eq!(after.refused[0], before.1.refused[0] + 1);
-        assert_eq!(after.segments, before.1.segments);
+        let _ = segment(&mut cpu, &mut ctx, table(), pose, false);
+        assert_eq!(count(pose).refused[0], before.1.refused[0] + 1);
     }
 
     static DAMAGE_BODIES: [Body; 2] = [

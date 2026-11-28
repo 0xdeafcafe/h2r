@@ -49,10 +49,10 @@ const GROUP_BYTES: u32 = 12;
 const MIRROR_SLOT: u32 = 0xc;
 const CAPACITY_SLOT: u32 = 0x20;
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// `impl.sim.native.anim`, set by the installer. The kernel runs wherever
-/// the marker port runs; `-impl.sim.native` turns it off with the group.
+/// On by default: the kernel runs wherever the marker port runs. Off
+/// leaves the register-level path, the tests' reference.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }

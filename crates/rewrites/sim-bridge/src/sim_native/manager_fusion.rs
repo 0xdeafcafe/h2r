@@ -138,14 +138,14 @@ mod tests {
             g.map_zeroed(0x1cb000, 0x1000, Permissions::RX).unwrap();
             g.map_zeroed(0x30000, 0x1000, Permissions::RW).unwrap();
             let rt = Runtime::new(g, dispatch);
-            let mut r = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
+            let mut r = Registry::new(Switches::defaults());
             r.add(&SimNative::new(&rt)).unwrap();
             if shared {
                 let setup = manager::bodies().find(|b| b.entry == SETUP).unwrap();
                 r.add(&Observe(&setup.point)).unwrap();
             }
             let mut plan = r.build(&Base).unwrap();
-            crate::sim_objects::without_walk(&mut plan);
+            super::only_anim(&mut plan);
             plan.install(&rt).unwrap();
             let mut ctx = ExecCtx::new(rt.clone(), 1);
             let lookup = rt.read_dispatch(|d| d.override_handler(LOOKUP)).unwrap();

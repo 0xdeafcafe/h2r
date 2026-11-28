@@ -54,11 +54,10 @@ const MODEL_NODES: u32 = 0x4c;
 /// model's).
 pub const NODES_MAX: usize = 4096;
 
-static ENABLED: AtomicBool = AtomicBool::new(false);
+static ENABLED: AtomicBool = AtomicBool::new(true);
 
-/// `impl.sim.native.anim`, set by the installer. The kernel runs wherever
-/// the first-person pose port runs; `-impl.sim.native` turns it off with
-/// the group.
+/// On by default: the kernel runs wherever the first-person pose port runs. Off
+/// leaves the register-level path, the tests' reference.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
 }

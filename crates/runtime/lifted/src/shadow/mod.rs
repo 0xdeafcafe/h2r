@@ -37,7 +37,7 @@ pub type TickFn = fn(&Guest) -> Option<u64>;
 /// One registered port and what its checks found.
 #[derive(Debug, Clone, Serialize)]
 pub struct Port {
-    /// The port's switch name (`sim.native_unit_pose`).
+    /// The port's label (`sim.port.unit_pose`).
     pub name: &'static str,
     /// Its group (`sim.native`, `sim.physics`).
     pub group: &'static str,
@@ -107,7 +107,7 @@ pub struct Enabled {
     /// Ports whose checks are now on.
     pub enabled: Vec<&'static str>,
     /// Ports named (directly or by group) that are registered but not
-    /// installed in this run: turn their `impl.` switch on to check them.
+    /// installed in this run: a subsystem body owns their point.
     pub not_installed: Vec<&'static str>,
     pub every: u64,
     pub step_limit: u64,

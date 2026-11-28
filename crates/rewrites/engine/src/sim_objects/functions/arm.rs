@@ -1,19 +1,20 @@
 //! The object-function evaluator's shadow arm (docs/engine/sim-rewrite.md,
 //! "Objects and units update (phase 3)"; the pattern of [`super::parity`]):
-//! at every entry of `bab40` OBJECT_FUNCTION_VALUE that the
-//! `impl.sim.native.objects` driver runs, the Rust evaluator
+//! at every entry of `bab40` OBJECT_FUNCTION_VALUE that the object
+//! driver runs, the Rust evaluator
 //! `sim_objects::functions::evaluator` answers from Rust-owned data
 //! (decoded definitions, copied tables, image constants) and the guest
 //! state the call reads.
 //!
 //! **Proof, then take-over.** Until [`PROVEN_AFTER`] answers have matched
-//! the guest's with no mismatch, the guest answers every call (the slice 3
-//! segment bodies) and the prediction made at the entry is compared at
-//! the return ([`returned`]). After that the evaluator answers, and one
-//! answerable call in [`AUDIT_EVERY`] still goes to the guest and is
-//! compared. A mismatch stops the take-over until the next map: from
-//! then on the guest answers every call. A declined call is the guest's,
-//! counted by reason. The counters are process-wide; the audit slot is
+//! the slice 3 body's with no mismatch, that Rust body answers every call
+//! (`value::value`, a register-level port of retail's) and the
+//! prediction made at the entry is compared at the return
+//! ([`returned`]). After that the evaluator answers, and one answerable
+//! call in [`AUDIT_EVERY`] still goes to the body and is compared. A
+//! mismatch stops the take-over until the next map: from then on the
+//! body answers every call. A declined call is the body's, counted by
+//! reason. Both answers are Rust; neither is a guest call. The counters are process-wide; the audit slot is
 //! the count of answerable calls, so it depends on no thread.
 //!
 //! **What an answer leaves.** The value stored through the out pointer;
