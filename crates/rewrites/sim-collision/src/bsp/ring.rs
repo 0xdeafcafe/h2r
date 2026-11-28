@@ -141,8 +141,13 @@ impl Bsp {
         fp: &mut Fp,
     ) -> Result<bool, Bail> {
         self.with_surface_ring(g, index, surface, |edges, groups| {
+            // The packed test runs every lane, past the edge where the
+            // guest's loop stops. Its answer stands only when it raised no
+            // flag the walk had not already raised, so the guest's shorter
+            // run raises none either.
             if !groups.is_empty()
-                && let Some(inside) = contains_packed(groups, axes, point, *fp)
+                && let Some((inside, after)) = contains_packed(groups, axes, point, *fp)
+                && after.mxcsr() == fp.mxcsr()
             {
                 return Ok(inside);
             }
@@ -156,7 +161,7 @@ fn contains_packed(
     axes: [usize; 2],
     point: [u32; 2],
     mut fp: Fp,
-) -> Option<bool> {
+) -> Option<(bool, Fp)> {
     for group in groups {
         let crosses = group.crosses(&mut fp, axes, point);
         // A later lane can fail a range check after an earlier lane would
@@ -164,11 +169,11 @@ fn contains_packed(
         if !fp.exact() {
             return None;
         }
-        if crosses.into_iter().any(|cross| above(cross, 0)) {
-            return Some(false);
+        if crosses.into_iter().any(|cross| above(&mut fp, cross, 0)) {
+            return fp.exact().then_some((false, fp));
         }
     }
-    Some(true)
+    fp.exact().then_some((true, fp))
 }
 
 fn contains_scalar(
@@ -190,7 +195,8 @@ fn contains_scalar(
         if !fp.exact() {
             return Err(Bail::Float);
         }
-        if above(cross, 0) {
+        // `comiss cross, 0; ja`.
+        if above(fp, cross, 0) {
             return Ok(false);
         }
     }

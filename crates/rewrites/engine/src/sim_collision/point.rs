@@ -23,9 +23,9 @@ fn walk<const N: usize>(
     let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
     outputs.check_bsp(g, &bsp)?;
     outputs.separate(g, c.edx, 12)?;
-    // The walk's SSE arithmetic under the guest's MXCSR: PE comes out set
-    // when an operation was inexact.
-    let mut fp = Fp::tracked(c.mxcsr);
+    // The walk's SSE arithmetic and compares under the guest's MXCSR, for
+    // any operand: the flags come out as the guest's instructions raise them.
+    let mut fp = Fp::guest(c.mxcsr);
     let p = bsp.point_result_with(&mut fp, node, m.vec3(c.edx)?)?;
     Ok((p, revision, fp.mxcsr().unwrap_or(c.mxcsr)))
 }

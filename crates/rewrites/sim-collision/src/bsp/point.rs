@@ -29,7 +29,8 @@ impl Bsp {
     }
 
     /// [`Bsp::point_result`] in the caller's `fp`: under
-    /// [`Fp::tracked`] it gathers the flags the guest's walk raises.
+    /// [`Fp::guest`] it runs any operand and gathers the flags the guest's
+    /// walk raises.
     pub fn point_result_with(
         &self,
         fp: &mut Fp,
@@ -49,7 +50,7 @@ impl Bsp {
             let x = fp.mul(nx, p[0]);
             let dot = fp.add(zy, x);
             let dist = fp.sub(dot, d);
-            let side = usize::from(non_negative(dist));
+            let side = usize::from(non_negative(fp, dist));
             if !fp.exact() {
                 return Err(Bail::Float);
             }

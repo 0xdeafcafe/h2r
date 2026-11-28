@@ -85,9 +85,32 @@ fn shared_groups_use_the_axes_in_each_reference() {
             let point = [d.to_bits(), (-d).to_bits()];
             let expected = contains_scalar(&edges, axes, point, &mut Fp::new()).unwrap();
             assert_eq!(
-                contains_packed(groups, axes, point, Fp::new()),
+                contains_packed(groups, axes, point, Fp::new()).map(|(inside, _)| inside),
                 Some(expected)
             );
+        }
+    }
+}
+
+#[test]
+fn packed_ring_under_the_guest_mxcsr_raises_only_what_the_ordered_test_does() {
+    let (image, bsp) = fixture(&POLYGON[..8], false, 4096);
+    let surface = &bsp.surfaces[0];
+    let edges = bsp.read_surface_ring(&image, 0).unwrap();
+    for row in 0..6 {
+        let axes = bsp.row_axes(row).unwrap();
+        for d in [-5.0f32, -4.0, -0.0, 0.0, 0.1, 1.5, 4.0, 5.0] {
+            let point = [d.to_bits(), (-d).to_bits()];
+            for mxcsr in [0x1f80, 0x1fa0] {
+                let mut want = Fp::guest(mxcsr);
+                let inside = contains_scalar(&edges, axes, point, &mut want).unwrap();
+                let mut got = Fp::guest(mxcsr);
+                assert_eq!(
+                    bsp.ring_contains(&image, 0, surface, axes, point, &mut got),
+                    Ok(inside)
+                );
+                assert_eq!(got.mxcsr(), want.mxcsr(), "row {row} d {d} mxcsr {mxcsr:#x}");
+            }
         }
     }
 }
@@ -105,7 +128,7 @@ fn packed_range_failure_replays_the_ordered_edge_test() {
         {
             let cached = bsp.ring.read().unwrap();
             let groups = cached.as_ref().unwrap().groups(surface);
-            assert_eq!(contains_packed(groups, axes, point, Fp::new()), None);
+            assert!(contains_packed(groups, axes, point, Fp::new()).is_none());
         }
         assert_eq!(
             bsp.ring_contains(&image, 0, surface, axes, point, &mut Fp::new()),

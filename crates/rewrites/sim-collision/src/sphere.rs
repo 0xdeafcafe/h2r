@@ -42,8 +42,8 @@ impl Sphere {
         self.offset_with(&mut Fp::new(), start)
     }
 
-    /// [`Sphere::offset`] in the caller's `fp` ([`Fp::tracked`] gathers
-    /// the guest's flags).
+    /// [`Sphere::offset`] in the caller's `fp` ([`Fp::guest`] runs any
+    /// operand as the guest does and gathers its flags).
     pub fn offset_with(&self, fp: &mut Fp, start: [u32; 3]) -> Result<SphereOffset, Bail> {
         let relative = std::array::from_fn(|i| fp.sub(start[i], self.center[i]));
         let (_, distance_squared) = dot(fp, relative, relative);
@@ -62,8 +62,9 @@ impl Sphere {
 }
 
 impl SphereOffset {
+    /// `comiss 0, gap; jbe` not taken: `0 > gap`, ordered.
     pub fn contains_start(&self) -> bool {
-        det::compare(self.gap, 0) == Ordering::Less
+        det::comiss(0, self.gap) == Some(Ordering::Greater)
     }
 
     /// Test a segment starting on or outside the sphere. A tangent or a
@@ -76,17 +77,23 @@ impl SphereOffset {
     pub fn sweep_with(&self, fp: &mut Fp, delta: [u32; 3]) -> Result<Sweep, Bail> {
         let (x_product, projection) = dot(fp, delta, self.relative);
         fp.check(projection);
-        let quadratic = if det::compare(projection, 0) == Ordering::Less {
+        // `comiss projection, 0; jb`: below zero or unordered.
+        let below = !matches!(det::comiss(projection, 0), Some(Ordering::Greater | Ordering::Equal));
+        let quadratic = if below {
             let (_, length_squared) = dot(fp, delta, delta);
             let projection_squared = fp.mul(projection, projection);
             let scaled_gap = fp.mul(length_squared, self.gap);
             let discriminant = fp.sub(projection_squared, scaled_gap);
             fp.check(discriminant);
-            let end = if det::compare(discriminant, 0) == Ordering::Greater {
+            // `comiss 0, discriminant; jae` misses: an end unless
+            // `0 >= discriminant`, ordered.
+            let misses = matches!(det::comiss(0, discriminant), Some(Ordering::Greater | Ordering::Equal));
+            let end = if !misses {
                 let negative_length = fp.sub(0, length_squared);
                 let gap = fp.sub(negative_length, projection);
                 fp.check(gap);
-                let gap_squared = if det::compare(gap, 0) == Ordering::Less {
+                // `comiss 0, gap; ja` accepts at once.
+                let gap_squared = if det::comiss(0, gap) == Some(Ordering::Greater) {
                     None
                 } else {
                     let squared = fp.mul(gap, gap);
@@ -122,7 +129,8 @@ impl Sweep {
         self.quadratic.as_ref().is_some_and(|q| {
             q.end.as_ref().is_some_and(|end| {
                 end.gap_squared.is_none_or(|squared| {
-                    det::compare(q.discriminant, squared) == Ordering::Greater
+                    // `comiss discriminant, squared; jbe` misses.
+                    det::comiss(q.discriminant, squared) == Some(Ordering::Greater)
                 })
             })
         })
@@ -193,5 +201,30 @@ mod tests {
             outside.sweep([f32::NAN.to_bits(), 0, 0]),
             Err(Bail::Float)
         ));
+    }
+
+    #[test]
+    fn guest_state_runs_exceptional_inputs_as_the_compares_branch() {
+        let sphere = Sphere {
+            center: [0; 3],
+            radius: 1.0f32.to_bits(),
+        };
+        // A subnormal start: the SSE model, DE raised, no decline.
+        let mut fp = Fp::guest(0x1f80);
+        let offset = sphere.offset_with(&mut fp, [1, 0, 0]).unwrap();
+        assert!(offset.contains_start());
+        assert_ne!(fp.mxcsr().unwrap() & 0x02, 0);
+        // A NaN delta: `jb` is taken on the unordered projection, so the
+        // quadratic runs; its NaN discriminant passes `jae`, and the NaN
+        // gap fails `ja`, so the end is squared. IE is raised.
+        let outside = sphere.offset([2.0f32.to_bits(), 0, 0]).unwrap();
+        let mut fp = Fp::guest(0x1f80);
+        let sweep = outside.sweep_with(&mut fp, [f32::NAN.to_bits(), 0, 0]).unwrap();
+        let q = sweep.quadratic.as_ref().expect("unordered projection runs the quadratic");
+        let end = q.end.as_ref().expect("unordered discriminant has an end");
+        assert!(end.gap_squared.is_some());
+        assert!(!sweep.hit());
+        assert!(fp.exact());
+        assert_ne!(fp.mxcsr().unwrap() & 0x01, 0);
     }
 }

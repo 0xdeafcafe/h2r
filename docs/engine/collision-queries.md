@@ -136,17 +136,32 @@ compare:
 
 ## Floats
 
-`sim_core::det::Fp` is exact-or-decline binary32. Every operand must be
-zero or have a magnitude in `[2^-63, 2^63)`. Anything else (NaN, infinity,
-subnormal, huge) bails with `float`. These bounds keep each add, subtract and multiply within binary32 range. Each operation rounds once under nearest-even on both host architectures. The entry checks host rounding and exception masks.
+A, B, C, D and the sphere pretest run their SSE arithmetic and compares
+in `sim_core::det::Fp::guest(mxcsr)`, for any operand. An operation whose
+operands are zero or of magnitude in `[2^-63, 2^63)` takes the host
+result, which rounds once under nearest-even on both host architectures;
+every other one (NaN, infinity, subnormal, huge) runs on the `simd`
+crate's SSE model, which rounds and raises flags as the MXCSR says. Each
+`comiss` goes through `Fp::comiss`: its operands raise IE or DE as the
+instruction does, and an unordered result branches as ZF, PF and CF all
+set do (`jb` and `jbe` taken, `ja` and `jae` not; `bsp::non_negative`,
+`bsp::above`, the sphere's tests). The `sim-collision` tests
+`the_walks_run_operands_off_the_fast_path_under_the_guest_state` and
+`guest_state_runs_exceptional_inputs_as_the_compares_branch` cover a
+plane component of `1e-30` and NaN inputs. `Fp::new` keeps the
+exact-or-decline rule (`float`) for E and J.
 
-A value the walk only compares is held to the compare's rule instead
-(`Fp::check_compared`): zero, any normal and infinity raise no flag, NaN
-and subnormals decline. The segment limit and R's fraction are such
-values. J passes the image's `FLT_MAX` limit (`0x44aed4`), and the walk
-computes only with the ordinary `min(limit, 1)`.
+The matcher's projection row is decided once per BSP: it takes absolute
+values and compares them in x87, which raises no flag on zero, normal or
+infinite components. A NaN or subnormal component makes the row `BAD`
+(`data`). A packed ring test stands only when it raised no flag the walk
+had not; otherwise the scalar test runs in guest order.
 
-The matcher loads normal components, takes absolute values and compares them in x87. Those steps are exact on the accepted range. The split's divide, sign change and binary32 store can round.
+The split's divide, sign change and binary32 store can round.
+`det::x87_neg_quotient_under(control, a, b)` takes operands off the
+fast path to the `x87` crate's model under the guest's control word and
+returns the stored bits and the flags raised; the adapter ORs them into
+the x87 status word (`Outcome::x87_flags`). On the fast path
 `det::x87_neg_quotient` computes it as a host f32 division. That gives the
 same bits in all three precision controls: the quotient is rounded once to
 24, 53 or 64 bits and then to 24, and since 53 >= 2*24 + 2 the double
@@ -160,12 +175,12 @@ The bridge first checks the MXCSR and x87 exception masks, the x87 error summary
 
 - MXCSR has every exception masked and rounds to nearest
   (`det::guest_env`); PE may be clear, as in the live game's `0x1f80`.
-  The kernels' SSE arithmetic runs in `det::Fp::tracked(mxcsr)` (A, B,
-  C, D and the sphere pretest) or a checked region that samples the
-  host's inexact flag for its SSE operations (`Checked::sse_inexact`, G
-  and H). An answer leaves the MXCSR with PE set when one was inexact,
-  as retail's. FTZ and DAZ do not matter because no operand is subnormal;
-  G and H also need them off (`det::checked_guest_env`).
+  The kernels' SSE arithmetic runs in `det::Fp::guest(mxcsr)` (A, B, C,
+  D and the sphere pretest; FTZ and DAZ act as the MXCSR says) or a
+  checked region that samples the host's inexact flag for its SSE
+  operations (`Checked::sse_inexact`, G and H, which need FTZ and DAZ off,
+  `det::checked_guest_env`). An answer leaves the MXCSR with the flags
+  retail's instructions raise.
 - For F and G: the x87 control word masks every exception, rounds to
   nearest and selects single or double precision (`det::Chain`; extended
   bails `float`), and one (F) or two (G) registers below the top are
@@ -187,7 +202,7 @@ operand guard accepts normals and signed zeros. The result guard also
 declines the smallest normal to cover differences in tininess detection.
 `det::Chain` keeps a single- or double-precision x87 working value
 through arithmetic, comparison and conversion. Reserved and extended
-precision decline general chains. A–D use the narrower range proof above.
+precision decline general chains.
 F runs its six conversions as chains inside one checked region: an
 operand that is not zero or normal, a non-normal result, or a value
 `fistp` cannot represent bails `float`.
@@ -372,7 +387,7 @@ hook reads for the panic.
 | Reason | When |
 |---|---|
 | `env` | MXCSR or the x87 environment is outside the checks above |
-| `float` | an arithmetic operand outside `Fp`'s range |
+| `float` | E or J: an arithmetic operand outside `Fp::new`'s range; F–I: an operand or result a checked region declines |
 | `fault` | an unreadable input, unwritable output or unusable stack range |
 | `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode; for F, a bad program size, a reached trap, a `guest_only` program, or an inverted or far box |
 | `depth` | the walk went deeper than 256 levels, or F's query nests more than 256 self-calls |

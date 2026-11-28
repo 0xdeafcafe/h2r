@@ -28,7 +28,7 @@ fn plan(c: &CpuAbi, g: &impl CollisionMemory) -> Result<Plan, Bail> {
         center: mem.vec3(c.eax)?,
         radius: mem.u32(c.esp.wrapping_add(4))?,
     };
-    let mut fp = Fp::tracked(c.mxcsr);
+    let mut fp = Fp::guest(c.mxcsr);
     let offset = sphere.offset_with(&mut fp, mem.vec3(c.ecx)?)?;
     let sweep = if offset.contains_start() {
         None
