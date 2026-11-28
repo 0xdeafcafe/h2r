@@ -203,19 +203,27 @@ pub fn plan(fade: &Fade, size: [u32; 2]) -> Result<Overlay, &'static str> {
     Ok(overlay)
 }
 
-/// The target the cut draws over: the scene overlay's, else target 0's
-/// (`0x0001dd60`, as the frame tail reads it).
+/// The UI's guest frame: every guest UI coordinate is 640 x 480.
+const FRAME: [u32; 2] = [640, 480];
+
+/// The target the fade covers: `scene` (the scene overlay's size), else
+/// target 0's as the frame tail reads it (`0x0001dd60`), else the UI's
+/// guest frame when target 0 reads zero-sized.
+pub fn extent(scene: [u32; 2], target0: Result<(u32, u32), guest_layout::memory::MemFault>) -> [u32; 2] {
+    if scene != [0, 0] {
+        return scene;
+    }
+    match target0 {
+        Ok((w, h)) if w != 0 && h != 0 => [w, h],
+        _ => FRAME,
+    }
+}
+
 fn target(mem: &dyn GuestMemory) -> [u32; 2] {
     let Some(size) = crate::scene_step::with_overlay(|o| o.size) else {
         unimplemented!("fade: no scene being built");
     };
-    if size != [0, 0] {
-        return size;
-    }
-    match crate::frame_tail::target0_size(mem) {
-        Ok((w, h)) if w != 0 && h != 0 => [w, h],
-        _ => unimplemented!("fade: target 0's size"),
-    }
+    extent(size, crate::frame_tail::target0_size(mem))
 }
 
 /// The hook at the fade's entry, before its scope opens: the cut's `ret`.
@@ -381,6 +389,13 @@ mod tests {
     }
 
     /// Mode 0 draws nothing; a mode past the table is not made.
+    #[test]
+    fn the_fade_target_falls_back_to_the_ui_frame() {
+        assert_eq!(extent([1280, 720], Ok((1, 1))), [1280, 720]);
+        assert_eq!(extent([0, 0], Ok((1920, 1080))), [1920, 1080]);
+        assert_eq!(extent([0, 0], Ok((0, 480))), [640, 480]);
+    }
+
     #[test]
     fn mode_zero_draws_nothing_and_a_bad_mode_is_named() {
         assert_eq!(read(&mem(0, [1.0; 4], 1.0)), Ok(None));
