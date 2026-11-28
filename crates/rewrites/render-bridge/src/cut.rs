@@ -8,7 +8,7 @@
 //! a `scene_dropped_*` count, never a D3D draw. The body survives only as a
 //! test oracle.
 //!
-//! Cuts are keyed by [`crate::residual_census::REGISTRY`] row name, so the
+//! Cuts are keyed by [`crate::producers::REGISTRY`] row name, so the
 //! table and the census cannot drift: [`check`] refuses a cut whose name is
 //! not a row or whose entry is not that row's.
 
@@ -19,14 +19,14 @@ use hooks::points::{self, Point, Sig};
 use runtime::guest::{Access, FaultReason};
 use runtime::GuestFault;
 
-use crate::{frame_step, residual_census};
+use crate::{frame_step, producers};
 
 const DOC: &str = "docs/graphics/framescene.md";
 
 /// One cut producer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Cut {
-    /// The `residual_census::REGISTRY` row it cuts.
+    /// The `producers::REGISTRY` row it cuts.
     pub name: &'static str,
     /// The guest function; the row's entry.
     pub entry: u32,
@@ -148,8 +148,8 @@ pub enum Refused {
 /// Whether every cut in `cuts` names a registry row and its entry.
 pub fn check(cuts: &[Cut]) -> Result<(), Refused> {
     for c in cuts {
-        let i = residual_census::row(c.name).ok_or(Refused::NotARow(c.name))?;
-        let row = &residual_census::REGISTRY[i];
+        let i = producers::row(c.name).ok_or(Refused::NotARow(c.name))?;
+        let row = &producers::REGISTRY[i];
         if row.entry != c.entry {
             return Err(Refused::WrongEntry {
                 name: c.name,

@@ -34,7 +34,6 @@ workspace_library(
     crate_root = "crates/hooking/hooks/src/lib.rs",
     description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md)",
     features = [
-        "d3d-reference",
         "default",
     ],
     manifest = "crates/hooking/hooks",
@@ -54,7 +53,6 @@ workspace_test(
     crate_root = "crates/hooking/hooks/src/lib.rs",
     description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md)",
     features = [
-        "d3d-reference",
         "default",
     ],
     manifest = "crates/hooking/hooks",
@@ -76,7 +74,6 @@ workspace_test(
     crate_root = "crates/hooking/hooks/tests/install.rs",
     description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md)",
     features = [
-        "d3d-reference",
         "default",
     ],
     manifest = "crates/hooking/hooks",
@@ -99,7 +96,6 @@ workspace_test(
     crate_root = "crates/hooking/hooks/tests/plan.rs",
     description = "The feature registry: named points, ordered hook chains, conflicts at plan time, switches, a guest arena, and the frame and game bridges (docs/engine/feature-engine.md)",
     features = [
-        "d3d-reference",
         "default",
     ],
     manifest = "crates/hooking/hooks",

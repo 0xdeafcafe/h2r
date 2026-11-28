@@ -518,9 +518,6 @@ impl Feature for NativeShadows {
                 else {
                     return;
                 };
-                if site == Site::Object && layer == 11 {
-                    crate::scene_step::object_shadow_end();
-                }
                 let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(host) = host {
                     host.end(&mut *mem, site, layer);

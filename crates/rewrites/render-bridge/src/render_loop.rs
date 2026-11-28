@@ -51,9 +51,8 @@ fn fault(f: engine::memory::MemFault) -> GuestFault {
     }
 }
 
-/// The BSP shader's state list up to its first necessary guest call. Hand
-/// the real return site to that callee so a render-thread fallback can
-/// continue in the original list without a host continuation.
+/// The BSP shader's state list. A state it must set through a guest call
+/// is a gap.
 pub(crate) fn world_states(cpu: &mut CpuAbi, mem: &mut Guest) -> Result<TransferAbi, GuestFault> {
     let mut r = regs(cpu);
     let (states, step) = RenderStates::start(&mut r, mem, cpu.x87.control, Mode::SkipRedundant)
@@ -63,7 +62,9 @@ pub(crate) fn world_states(cpu: &mut CpuAbi, mem: &mut Guest) -> Result<Transfer
     store(cpu, &r);
     match step {
         Step::Return { to } => Ok(TransferAbi::ret(to)),
-        Step::Call { target, site, .. } => mem.call(cpu, target, site),
+        Step::Call { target, site, .. } => {
+            unimplemented!("render: guest body {target:#x} render-state list call (site {site:#x})")
+        }
     }
 }
 

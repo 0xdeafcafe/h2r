@@ -90,13 +90,8 @@ impl Feature for NativeWorldLayers {
                 let rt = std::sync::Arc::clone(c.ctx.runtime());
                 let cut = {
                     let mut guest = rt.memory();
-                    let cut = crate::native_sky::before_sky(&mut *guest, crate::native_map_work::bsp_generation())
-                        .passes_over();
-                    // The census's `sky` end does not run for a pass passed over.
-                    if cut {
-                        crate::residual_census::passed_over(&mut *guest, points::RENDER_SKY.base);
-                    }
-                    cut
+                    crate::native_sky::before_sky(&mut *guest, crate::native_map_work::bsp_generation())
+                        .passes_over()
                 };
                 if cut { c.ret(0).map(hooks::Flow::Return) } else { Ok(hooks::Flow::Continue) }
             })

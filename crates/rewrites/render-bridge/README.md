@@ -11,7 +11,10 @@ The guest side of the native renderer: the stage hooks, admissions and the frame
 - `src/lib.rs`: the install entry point.
 - `src/native_*.rs`, `src/native_*/`: one admission and hook set per stage (world, objects, lights, shadows, particles, HUD).
 - `src/scene_step.rs`: the frame step's scene.
-- `src/render_census.rs`, `src/entry_census.rs`, `src/render_timing.rs`: diagnostics.
+- `src/guest_entries.rs`: the guest D3D entries, each a named panic.
+- `src/frame_wait.rs`: the vblank source and the engine frame wait.
+- `src/producers.rs`: the guest render producers the cuts key by.
+- `src/render_timing.rs`: diagnostics.
 
 ## Features
 

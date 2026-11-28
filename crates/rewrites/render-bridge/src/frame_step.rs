@@ -21,7 +21,7 @@ pub enum Owner {
     /// The frame owner, once per frame ([`Step::Frame`]).
     Frame,
     /// Before each of these cut producers' bodies would have run, named by
-    /// `residual_census::REGISTRY` row ([`Step::Producer`]).
+    /// `producers::REGISTRY` row ([`Step::Producer`]).
     Producers(&'static [&'static str]),
 }
 

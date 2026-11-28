@@ -536,36 +536,6 @@ workspace_test(
 )
 
 workspace_test(
-    name = "render_census",
-    crate = "render_census",
-    crate_root = "crates/rewrites/render-bridge/tests/render_census.rs",
-    description = "The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions and the frame step's scene (docs/graphics/framescene.md)",
-    features = [
-        "default",
-        "native-render",
-    ],
-    manifest = "crates/rewrites/render-bridge",
-    package = "render-bridge",
-    tree = ":test-tree",
-    version = "0.1.0",
-    deps = [
-        "//crates/formats/tags:tags",
-        "//crates/hooking/hooks:hooks",
-        "//crates/platform/canvas-fit:canvas-fit",
-        "//crates/platform/frame-types:frame-types",
-        "//crates/rewrites/engine:engine",
-        "//crates/rewrites/frame-scene:frame-scene",
-        "//crates/rewrites/native-render:native-render",
-        "//crates/rewrites/scene-extract:scene-extract",
-        "//crates/rewrites/sim-effects:sim-effects",
-        "//crates/runtime/runtime/test-probe:runtime-test-probe",
-        "//crates/runtime/runtime:runtime",
-        "//crates/runtime/timeline:timeline",
-        ":render-bridge",
-    ],
-)
-
-workspace_test(
     name = "scene_lifecycle",
     crate = "scene_lifecycle",
     crate_root = "crates/rewrites/render-bridge/tests/scene_lifecycle.rs",

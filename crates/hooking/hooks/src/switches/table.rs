@@ -67,10 +67,6 @@ const EXACT: &str = "both paths are exact: make the default unconditional";
 
 pub const TABLE: &[Switch] = &[
     // Rendering.
-    sw("impl.render.native", On, "render", "2026-11-14",
-        "the native renderer owns the frame (review 4.3): delete with the D3D path"),
-    sw("impl.render.native.visibility", On, "render", "2026-11-27",
-        "the guest's view projection and visibility producers replaced (retire-d3d.md R4): delete when R4's differentials hold on the gate corpus"),
     sw("impl.render.native-hud", On, "render", "2026-11-27",
         "HUD widget quads from their Rust material, no guest shader setup (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     sw("impl.render.native-hud-walk", On, "render", "2026-11-27",
