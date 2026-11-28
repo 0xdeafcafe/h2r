@@ -67,6 +67,17 @@ pub enum Error {
         /// The largest the field holds.
         max: u32,
     },
+    /// A collision BSP is past what the Rust collision walk holds
+    /// ([`collision::MAX_RING`], [`collision::MAX_DEPTH`]).
+    #[error("collision {what} {value} is over the walk's bound of {max}")]
+    CollisionBound {
+        /// What is over: a surface's edge ring, or the tree's depth.
+        what: &'static str,
+        /// The measured size.
+        value: usize,
+        /// The bound.
+        max: usize,
+    },
     /// The Halo 1 map couldn't be read.
     #[error(transparent)]
     H1(#[from] h1map::Error),

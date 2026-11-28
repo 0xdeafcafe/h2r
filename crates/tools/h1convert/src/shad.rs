@@ -2059,6 +2059,19 @@ pub fn textureless_layout(group: h1map::Group, bytes: &[u8]) -> Option<&'static 
         // 0x774a2 / 0x77500 bind white and neutral detail respectively.
         return Some(&TEX_BUMP);
     }
+    // A model shader with no map, no reflection and no change colour (the
+    // `invisible` of the spray and waterfall emitters): its base and detail
+    // bind white and neutral as a map-less `senv`'s do, the white lit
+    // surface `docs/halo1/role-audit.md` gives the waterfall emitter.
+    if group == h1map::Group::new(b"soso")
+        && zero(0x28, 2)
+        && zero(SOSO_CHANGE_COLOUR, 2)
+        && null_maps(&[0xa4, SOSO_MULTIPURPOSE, 0xdc, SOSO_CUBE])
+        && zero(SOSO_PERPENDICULAR_BRIGHTNESS, 4)
+        && zero(SOSO_PARALLEL_BRIGHTNESS, 4)
+    {
+        return Some(&TEX_BUMP);
+    }
     if group == h1map::Group::new(b"sgla")
         && zero(0x28, 2)
         && null_maps(&[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4])
@@ -3359,6 +3372,11 @@ mod tests {
                 &TEX_BUMP,
             ),
             (
+                b"soso",
+                &[0xa4, SOSO_MULTIPURPOSE, 0xdc, SOSO_CUBE][..],
+                &TEX_BUMP,
+            ),
+            (
                 b"sgla",
                 &[0x64, 0xac, 0xc0, 0x158, 0x16c, 0x1a0, 0x1b4][..],
                 &program::glass::CLEAR,
@@ -3379,6 +3397,17 @@ mod tests {
             b[slots[0] + 12] = 0xff;
             if group == h1map::Group::new(b"sgla") {
                 b[0x54..0x58].fill(0);
+                assert!(textureless_layout(group, &b).is_none());
+            }
+            if group == h1map::Group::new(b"soso") {
+                // The test fills 0x54..0x5c with 1.0 for glass; a soso
+                // reads none of it. A reflection or change colour is not
+                // map-less.
+                b[SOSO_PERPENDICULAR_BRIGHTNESS..SOSO_PERPENDICULAR_BRIGHTNESS + 4]
+                    .copy_from_slice(&1f32.to_le_bytes());
+                assert!(textureless_layout(group, &b).is_none());
+                b[SOSO_PERPENDICULAR_BRIGHTNESS..SOSO_PERPENDICULAR_BRIGHTNESS + 4].fill(0);
+                b[SOSO_CHANGE_COLOUR] = 1;
                 assert!(textureless_layout(group, &b).is_none());
             }
         }

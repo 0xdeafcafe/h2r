@@ -625,6 +625,7 @@ pub(crate) fn merge_materials(
     if piece.nodes.is_empty() || piece.surfaces.is_empty() || piece.vertices.is_empty() {
         return Ok(Merged::default());
     }
+    crate::collision::check_bounds(piece)?;
     let base = Base {
         planes: level.planes.len(),
         nodes_2d: level.nodes_2d.len(),
