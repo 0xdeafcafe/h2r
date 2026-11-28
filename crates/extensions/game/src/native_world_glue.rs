@@ -1681,8 +1681,6 @@ fn load_ready(
     let empty_lights = {
         let _scope = mem_watch::scope("native.lights.load");
         let _setup = Setup::Lights.worker();
-        // The second fog's bitmaps (native_fog_fans_glue).
-        crate::native_fog_fans_glue::load(&mut map, &mut files);
         let lights = crate::native_lights_glue::load(&mut map, &mut files, &shaders, &stage_world, decoder.palettes());
         if let Some(lights) = lights {
             let lights = Arc::new(lights);

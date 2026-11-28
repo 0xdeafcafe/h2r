@@ -21,7 +21,8 @@
 //!
 //! What the cut cannot draw is `unimplemented!("fog fans: <cause>")`: no
 //! host (`host`), a pass the device does not place (`placed`), the
-//! host's (a bitmap not loaded, a stage or copy it cannot make), a view
+//! host's (a texture it cannot decode, a stage or copy it cannot make), a
+//! bitmap that binds nothing (`texture_unbound`), a view
 //! target other than 0 (`composite into target <n>`), a weather plate
 //! call other than the composite's (`weather plate <cause>`: its kind,
 //! flags or result), a fan not finite
@@ -49,8 +50,9 @@ pub const RASTERIZER_BITMAP: u32 = 0x14;
 pub enum Source {
     /// The surface at a header: a game target's (by role) or the view's.
     Surface(u32),
-    /// Image `image` of the bitmap `datum`.
-    Bitmap { datum: u32, image: u32 },
+    /// A bitmap image's texture header as `0x000143c0` binds it
+    /// ([`stage_texture`]), decoded from guest memory by the host.
+    Texture(u32),
 }
 
 /// One fan to place: the draw, the surface header it draws into, and what
@@ -128,6 +130,41 @@ pub enum Turn {
     Guest,
     /// The fan is placed and the setup's writes made: return AL 0.
     Return,
+    /// A stage's image is not resident: ask the guest's texture cache
+    /// `0x00012310` for it (eax the image, xmm2 the LOD 0), as
+    /// `0x000143c0` does, then [`turn_with`] its header. Nothing is
+    /// written before.
+    Stream(u32),
+}
+
+/// The texture cache's get of an image's header (`eax` the image record,
+/// `xmm2` the LOD), which `0x000143c0` calls: the header when resident,
+/// else what the cache has after asking for the load.
+pub const TEXTURE_CACHE: u32 = 0x0001_2310;
+
+/// What [`fan`] makes of a setup call.
+#[derive(Debug, PartialEq)]
+pub enum Made {
+    /// The fan to place; the setup's writes are made.
+    Draw(Fan),
+    /// [`Turn::Stream`]: nothing written.
+    Stream(u32),
+    /// The cache returned no header for a stage: the writes are made and
+    /// nothing is drawn that frame.
+    NoTexture,
+}
+
+/// The header `0x000143c0` binds for `bitmap`'s `image`: the resident one
+/// (`native_render::effect_material::texture_cached`), else the one the
+/// guest's cache returned for that image record in `streamed`, else
+/// `Err` the record to ask about. A bitmap that binds nothing panics
+/// (`texture_unbound`: the stage would keep the last texture).
+pub fn stage_texture(mem: &dyn GuestMemory, bitmap: u32, image: i32, streamed: &[(u32, u32)]) -> Result<u32, u32> {
+    use native_render::effect_material::{Cached, texture_cached};
+    match texture_cached(&|a| mem.u32(a).ok(), bitmap, image).unwrap_or_else(|why| unported(why)) {
+        Cached::Header(h) => Ok(h),
+        Cached::Streaming { image } => streamed.iter().find(|(i, _)| *i == image).map(|&(_, h)| h).ok_or(image),
+    }
 }
 
 /// Which of the three setups a cut is at.
@@ -170,9 +207,10 @@ fn refused(r: native_render::fog_fans::Refusal) -> ! {
 const PIXELS: Option<FanStage> = Some(FanStage { coords: Coords::Pixels, wrap: false });
 
 /// The fan of `setup` whose rectangle is at `rect_at`; `mem` takes the
-/// setup's and its callback's writes.
-pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x87_control: u16) -> Fan {
-    match setup {
+/// setup's and its callback's writes. `streamed` holds the headers the
+/// guest's texture cache returned so far, by image record.
+pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x87_control: u16, streamed: &[(u32, u32)]) -> Made {
+    Made::Draw(match setup {
         Setup::Composite => {
             let c = ff::composite(&*mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e)));
             let draw = FanDraw::composite(c.combiner, floats(c.positions), floats(c.coordinates)).unwrap_or_else(|r| refused(r));
@@ -182,11 +220,23 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             Fan { draw, dest: view_surface(&*mem, c.target), sources: [Some(Source::Surface(game(ff::COMPOSITE_SOURCE))), None, None, None] }
         }
         Setup::Layers => {
+            // `0x000268cf`, per stage, before any write.
+            let (bitmap, images) = ff::layers_bitmap(&*mem).unwrap_or_else(|_| unported("unread"));
+            let mut headers = [0; 4];
+            for (h, image) in headers.iter_mut().zip(images) {
+                match stage_texture(&*mem, bitmap, i32::from(image as i16), streamed) {
+                    Ok(t) => *h = t,
+                    Err(record) => return Made::Stream(record),
+                }
+            }
             let l = ff::layers(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e)));
+            if headers.contains(&0) {
+                return Made::NoTexture;
+            }
             let stage = Some(FanStage { coords: Coords::Unit, wrap: true });
             let draw = FanDraw::from_fan(l.combiner, floats(l.positions), l.coordinates.map(floats), [stage; 4], FanRaster::Opaque)
                 .unwrap_or_else(|r| refused(r));
-            let sources = l.images.map(|image| Some(Source::Bitmap { datum: l.bitmap, image: u32::from(image) }));
+            let sources = headers.map(|h| Some(Source::Texture(h)));
             Fan { draw, dest: game(ff::LAYERS_TARGET), sources }
         }
         Setup::LayersComposite => {
@@ -196,14 +246,22 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
                     unported(&format!("weather plate {why}"));
                 }
                 if let Some(plate) = ff::weather_plate_placement(mem, mxcsr, x87_control, &args).unwrap_or_else(|e| unported(cause(e))) {
-                    return plate_fan(mem, plate, rect_at, mxcsr);
+                    return Made::Draw(plate_fan(mem, plate, rect_at, mxcsr));
                 }
             }
-            let c = ff::layers_composite(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e)));
+            // Stage 2 before any write (a false plate writes nothing).
             let bitmap = mem
                 .u32(RASTERIZER)
                 .and_then(|e| mem.u32(e.wrapping_add(RASTERIZER_BITMAP)))
                 .unwrap_or_else(|_| unported("unread"));
+            let header = match stage_texture(&*mem, bitmap, 0, streamed) {
+                Ok(h) => h,
+                Err(record) => return Made::Stream(record),
+            };
+            let c = ff::layers_composite(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e)));
+            if header == 0 {
+                return Made::NoTexture;
+            }
             let unit = Some(FanStage { coords: Coords::Unit, wrap: false });
             let raster = if c.blue_only() { FanRaster::BlueOnly } else { FanRaster::Constant };
             let draw = FanDraw::from_fan(c.combiner, floats(c.positions), c.coordinates.map(floats), [PIXELS, None, unit, PIXELS], raster)
@@ -215,12 +273,12 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             let sources = [
                 Some(Source::Surface(game(ff::COMPOSITE_SOURCE))),
                 None,
-                Some(Source::Bitmap { datum: bitmap, image: 0 }),
+                Some(Source::Texture(header)),
                 Some(Source::Surface(game(ff::LAYERS_TARGET))),
             ];
             Fan { draw, dest, sources }
         }
-    }
+    })
 }
 
 /// The layers' composite's fan when the weather plate returned true:
@@ -243,11 +301,28 @@ fn plate_fan(mem: &mut dyn GuestMemory, plate: ff::WeatherPlate, rect_at: u32, m
 /// The setup `setup`'s call at `esp` under the call's MXCSR and x87
 /// control word, `host` the one drawing.
 pub fn turn(mem: &mut dyn GuestMemory, setup: Setup, esp: u32, mxcsr: u32, x87_control: u16, host: Option<&dyn Host>) -> Turn {
+    turn_with(mem, setup, esp, mxcsr, x87_control, host, &[])
+}
+
+/// [`turn`] with the headers the guest's texture cache returned so far.
+pub fn turn_with(
+    mem: &mut dyn GuestMemory,
+    setup: Setup,
+    esp: u32,
+    mxcsr: u32,
+    x87_control: u16,
+    host: Option<&dyn Host>,
+    streamed: &[(u32, u32)],
+) -> Turn {
     let (fan_return, corners) = setup.frame();
     let Some(rect_at) = ff::fan_call(&*mem, esp, fan_return, corners) else {
         return Turn::Guest;
     };
-    let fan = fan(mem, setup, rect_at, mxcsr, x87_control);
+    let fan = match fan(mem, setup, rect_at, mxcsr, x87_control, streamed) {
+        Made::Draw(fan) => fan,
+        Made::Stream(image) => return Turn::Stream(image),
+        Made::NoTexture => return Turn::Return,
+    };
     let host = host.unwrap_or_else(|| unported("host"));
     if let Err(why) = host.fan(mem, &fan) {
         unported(why);
@@ -278,7 +353,48 @@ fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) 
             cpu.eax &= !0xff;
             rt.memory().ret(cpu, 4)
         }
+        Turn::Stream(image) => stream(cpu, ctx, setup, Vec::new(), image),
     }
+}
+
+/// Asks the guest's texture cache for `image`, as `0x000143c0` does, then
+/// runs the cut again with its header; another stage not resident asks
+/// again.
+fn stream(
+    cpu: &mut runtime::CpuAbi,
+    ctx: &mut runtime::ExecCtx,
+    setup: Setup,
+    streamed: Vec<(u32, u32)>,
+    image: u32,
+) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    if streamed.len() >= 4 {
+        unported("texture_stream");
+    }
+    let rt = Arc::clone(ctx.runtime());
+    let (esp, mxcsr, control) = (cpu.esp, cpu.mxcsr, cpu.x87.control);
+    cpu.eax = image;
+    cpu.xmm[2] = [0; 16];
+    let mut mem = rt.memory();
+    ctx.call_guest_named(cpu, &mut mem, TEXTURE_CACHE, "native_fog_fans_texture", move |cpu, ctx| {
+        if cpu.esp != esp {
+            unported("texture_stack");
+        }
+        let mut streamed = streamed;
+        streamed.push((image, cpu.eax));
+        let rt = Arc::clone(ctx.runtime());
+        let turn = {
+            let mut mem = rt.memory();
+            turn_with(&mut *mem, setup, esp, mxcsr, control, host().as_deref(), &streamed)
+        };
+        match turn {
+            Turn::Return => {
+                cpu.eax &= !0xff;
+                rt.memory().ret(cpu, 4)
+            }
+            Turn::Stream(next) => stream(cpu, ctx, setup, streamed, next),
+            Turn::Guest => unported("texture_stream"),
+        }
+    })
 }
 
 pub struct NativeFogFans;
@@ -353,6 +469,20 @@ mod tests {
         m.set_u32(0x0050_4000 + lg::BITMAP_DATUM, 0xabcd_0001).unwrap();
         m.set_u32(RASTERIZER, 0x0050_5000).unwrap();
         m.set_u32(0x0050_5000 + RASTERIZER_BITMAP, 0xdcba_0002).unwrap();
+        m.set_u32(0x0050_5000 + 0x64, u32::MAX).unwrap();
+        // The bitmaps' images, resident: the patch's (datum 1) sixteen,
+        // the rasterizer's (datum 2) one.
+        m.set_u32(native_render::effect_material::RESIDENT_STAMP, 4).unwrap();
+        for (datum, data, records, count, header) in [(1u32, 0x0050_6000u32, PATCH_IMAGES, 16u32, PATCH_HEADER), (2, 0x0050_8000, RASTER_IMAGE, 1, RASTER_HEADER)] {
+            m.set_u32(0x0050_3000 + (datum << 4) + 8, data).unwrap();
+            m.set_u32(data + 0x44, count).unwrap();
+            m.set_u32(data + 0x48, records).unwrap();
+            for n in 0..count {
+                let r = records + 0x74 * n;
+                m.set_u32(r + 0x50, header + 0x100 * n).unwrap();
+                m.set_u32(r + 0x70, 5).unwrap();
+            }
+        }
         m.set_u8(lg::BRANCH, 1).unwrap();
         m.set_u8(global::FLAG_DL, 1).unwrap();
         m.set_u32(crate::frame_tail::TARGET0_COLOUR, VIEW).unwrap();
@@ -363,6 +493,11 @@ mod tests {
         m.set_u32(ESP + ff::SETUP_FRAME + 8, corners).unwrap();
         m
     }
+
+    const PATCH_IMAGES: u32 = 0x0050_a000;
+    const PATCH_HEADER: u32 = 0x0051_0000;
+    const RASTER_IMAGE: u32 = 0x0050_c000;
+    const RASTER_HEADER: u32 = 0x0051_8000;
 
     #[derive(Default)]
     struct Drawn(Mutex<Vec<Fan>>, Option<&'static str>);
@@ -431,7 +566,7 @@ mod tests {
         let fan = drawn(Setup::Layers, &mut m);
         assert_eq!(fan.dest, game(0x13));
         assert_eq!(crate::native_targets::role(fan.dest, 0), Some(TargetRole::Game(0x13)));
-        assert_eq!(fan.sources[2], Some(Source::Bitmap { datum: 0xabcd_0001, image: 9 }));
+        assert_eq!(fan.sources[2], Some(Source::Texture(PATCH_HEADER + 0x100 * 9)));
         assert_eq!(fan.draw.raster, FanRaster::Opaque);
         assert!(fan.draw.stages.iter().all(|s| *s == Some(FanStage { coords: Coords::Unit, wrap: true })));
         assert_eq!(fan.draw.combiner[54], 0x8421);
@@ -447,7 +582,7 @@ mod tests {
             [
                 Some(Source::Surface(game(3))),
                 None,
-                Some(Source::Bitmap { datum: 0xdcba_0002, image: 0 }),
+                Some(Source::Texture(RASTER_HEADER)),
                 Some(Source::Surface(game(0x13))),
             ]
         );
@@ -510,11 +645,45 @@ mod tests {
     fn a_refused_plate_takes_the_set_branch_with_the_scaled_lerp_at_stage_1() {
         let mut m = plate_mem(24.0, 24.0);
         let fan = drawn(Setup::LayersComposite, &mut m);
-        assert_eq!(fan.sources[2], Some(Source::Bitmap { datum: 0xdcba_0002, image: 0 }));
+        assert_eq!(fan.sources[2], Some(Source::Texture(RASTER_HEADER)));
         assert_eq!(fan.draw.combiner[54], 0xa621);
         // The branch byte clear: attribute 2 is the scaled lerp, not the
         // dot vector.
         assert_eq!(fan.draw.strip[3].1[1], [320.0, 240.0, 0.0, 1.0]);
+        assert_eq!(m.u32(cg::DEPTH).unwrap(), 1024.0f32.to_bits());
+    }
+
+    #[test]
+    fn a_layer_out_of_range_binds_the_rasterizer_default() {
+        let mut m = setup_mem(Setup::Layers);
+        m.set_u32(0x0050_5000 + 0x64, 0xdcba_0002).unwrap();
+        m.set_u16(lg::LAYERS + lg::LAYER_STRIDE, 40).unwrap();
+        let fan = drawn(Setup::Layers, &mut m);
+        assert_eq!(fan.sources[1], Some(Source::Texture(RASTER_HEADER)));
+        assert_eq!(fan.sources[0], Some(Source::Texture(PATCH_HEADER)));
+    }
+
+    #[test]
+    fn a_streaming_image_asks_the_cache_and_draws_what_it_returns() {
+        let mut m = setup_mem(Setup::Layers);
+        // Image 2 streamed (`+0x0f` bit 1) past its stamp.
+        let record = PATCH_IMAGES + 0x74 * 2;
+        m.set_u32(record + 0x70, 4).unwrap();
+        m.set_u32(record + 0xc, 0x0200_0000).unwrap();
+        m.set_u16(lg::LAYERS + 2 * lg::LAYER_STRIDE, 2).unwrap();
+        let host = Drawn::default();
+        let before = m.bytes(0x0040_0000, 0x0012_0000).unwrap();
+        assert_eq!(turn(&mut m, Setup::Layers, ESP, MXCSR, CONTROL, Some(&host)), Turn::Stream(record));
+        // Nothing is written or drawn before the cache is asked.
+        assert_eq!(m.bytes(0x0040_0000, 0x0012_0000).unwrap(), before);
+        assert!(host.0.lock().unwrap().is_empty());
+        assert_eq!(turn_with(&mut m, Setup::Layers, ESP, MXCSR, CONTROL, Some(&host), &[(record, 0x0051_7000)]), Turn::Return);
+        assert_eq!(host.0.lock().unwrap()[0].sources[2], Some(Source::Texture(0x0051_7000)));
+        // No header yet: nothing drawn, the callback's depth write made.
+        let host = Drawn::default();
+        m.set_u32(cg::DEPTH, 0).unwrap();
+        assert_eq!(turn_with(&mut m, Setup::Layers, ESP, MXCSR, CONTROL, Some(&host), &[(record, 0)]), Turn::Return);
+        assert!(host.0.lock().unwrap().is_empty());
         assert_eq!(m.u32(cg::DEPTH).unwrap(), 1024.0f32.to_bits());
     }
 

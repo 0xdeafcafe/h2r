@@ -93,6 +93,18 @@ pub struct DecalBitmap {
     tex_scale: Option<[f32; 4]>,
 }
 
+impl DecalBitmap {
+    /// Level 0's width and height.
+    pub(crate) fn size(&self) -> (u32, u32) {
+        (self.levels[0].0, self.levels[0].1)
+    }
+
+    /// A linear texture, fetched in texels.
+    pub(crate) fn linear(&self) -> bool {
+        self.tex_scale.is_some()
+    }
+}
+
 /// Decoded bitmaps by key; cleared when it grows past [`BITMAP_LIMIT`].
 static BITMAPS: Mutex<Option<HashMap<u64, Arc<DecalBitmap>>>> = Mutex::new(None);
 const BITMAP_LIMIT: usize = 256;

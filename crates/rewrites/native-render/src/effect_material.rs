@@ -93,34 +93,68 @@ fn tag_data(word: &dyn Fn(u32) -> Option<u32>, datum: u32) -> Option<u32> {
 /// what the loader returns (`texture_streaming`); a bitmap without images
 /// binds nothing (`texture_unbound`).
 pub fn texture_header(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, image: i32) -> Result<u32, Unresolved> {
-    let unread = "texture_unread";
-    let rasterizer = word(RASTERIZER).ok_or(unread)?;
+    let at = image_record(word, bitmap, image)?;
+    let stamp = word(at.wrapping_add(0x70)).ok_or(UNREAD)? as i32;
+    let header = word(at.wrapping_add(0x50)).ok_or(UNREAD)?;
+    if stamp <= word(RESIDENT_STAMP).ok_or(UNREAD)? as i32 || header == 0 {
+        return Err("texture_streaming");
+    }
+    Ok(header)
+}
+
+const UNREAD: &str = "texture_unread";
+
+/// The image record `0x000143c0` hands `0x00012310` for `bitmap`'s
+/// `image` (`0x00137550`), with the rasterizer default's fall-back.
+fn image_record(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, image: i32) -> Result<u32, Unresolved> {
+    let rasterizer = word(RASTERIZER).ok_or(UNREAD)?;
     let default = || word(rasterizer.checked_add(0x64)?);
     let (mut datum, mut image) = (bitmap, image);
     if datum == u32::MAX {
-        datum = default().ok_or(unread)?;
+        datum = default().ok_or(UNREAD)?;
         image = 0;
         if datum == u32::MAX {
             return Err("texture_unbound");
         }
     }
-    let mut tag = tag_data(word, datum).ok_or(unread)?;
+    let mut tag = tag_data(word, datum).ok_or(UNREAD)?;
     let count = |tag: u32| word(tag.checked_add(0x44)?).map(|c| c as i32);
-    if image < 0 || image >= count(tag).ok_or(unread)? {
-        datum = default().ok_or(unread)?;
+    if image < 0 || image >= count(tag).ok_or(UNREAD)? {
+        datum = default().ok_or(UNREAD)?;
         image = 0;
-        tag = tag_data(word, datum).ok_or(unread)?;
+        tag = tag_data(word, datum).ok_or(UNREAD)?;
     }
-    if tag == 0 || count(tag).ok_or(unread)? <= 0 || image >= count(tag).ok_or(unread)? {
+    if tag == 0 || count(tag).ok_or(UNREAD)? <= 0 || image >= count(tag).ok_or(UNREAD)? {
         return Err("texture_unbound");
     }
-    let at = word(tag + 0x48).ok_or(unread)?.wrapping_add(image as u32 * 0x74);
-    let stamp = word(at.wrapping_add(0x70)).ok_or(unread)? as i32;
-    let header = word(at.wrapping_add(0x50)).ok_or(unread)?;
-    if stamp <= word(RESIDENT_STAMP).ok_or(unread)? as i32 || header == 0 {
-        return Err("texture_streaming");
+    Ok(word(tag + 0x48).ok_or(UNREAD)?.wrapping_add(image as u32 * 0x74))
+}
+
+/// What `0x000143c0` binds for `bitmap`'s `image`, as [`texture_header`]
+/// finds the image, up to the texture cache.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cached {
+    /// `0x00012310`'s fast arm: the header `+0x50`, non-zero, with a stamp
+    /// `+0x70` past the cache's or not streamed (`+0x0f` bit 1 clear,
+    /// `0x0012cd2c`).
+    Header(u32),
+    /// Otherwise the image record the guest's `0x00012310` is asked about
+    /// (it may start the load, and returns the header it has).
+    Streaming { image: u32 },
+}
+
+/// [`Cached`] for `bitmap`'s `image`; `Err` as [`texture_header`]'s
+/// (`texture_unbound`, `texture_unread`).
+pub fn texture_cached(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, image: i32) -> Result<Cached, Unresolved> {
+    let at = image_record(word, bitmap, image)?;
+    let stamp = word(at.wrapping_add(0x70)).ok_or(UNREAD)? as i32;
+    let header = word(at.wrapping_add(0x50)).ok_or(UNREAD)?;
+    let streamed = (word(at.wrapping_add(0xc)).ok_or(UNREAD)? >> 24) & 2 != 0;
+    let fresh = stamp > word(RESIDENT_STAMP).ok_or(UNREAD)? as i32;
+    if header != 0 && (fresh || !streamed) {
+        return Ok(Cached::Header(header));
     }
-    Ok(header)
+    Ok(Cached::Streaming { image: at })
 }
 
 /// The datum of engine vertex shader `slot` (`[[0x00485a80] + 0x5c] + 8 *
@@ -244,6 +278,25 @@ pub(crate) mod tests {
         // Out of range and datum -1 both bind the default bitmap's image 0.
         assert_eq!(texture_header(&word, 0xe000_0002, 2), Ok(0xc000));
         assert_eq!(texture_header(&word, u32::MAX, 5), Ok(0xc000));
+    }
+
+    #[test]
+    fn the_cache_takes_a_fresh_or_unstreamed_header_and_asks_for_the_rest() {
+        let mut w = guest();
+        for image in [0x3000, 0x3074, 0x4000] {
+            w.set(image + 0xc, 0);
+        }
+        let at = |w: &Words, b, i| texture_cached(&|a| w.word(a), b, i);
+        assert_eq!(at(&w, 0xe000_0002, 0), Ok(Cached::Header(0xb000)));
+        // A stale stamp: not streamed is taken, streamed (`+0x0f` bit 1) asks.
+        assert_eq!(at(&w, 0xe000_0002, 1), Ok(Cached::Header(0xb100)));
+        w.set(0x3074 + 0xc, 0x0200_0000);
+        assert_eq!(at(&w, 0xe000_0002, 1), Ok(Cached::Streaming { image: 0x3074 }));
+        w.set(0x3000 + 0x50, 0);
+        assert_eq!(at(&w, 0xe000_0002, 0), Ok(Cached::Streaming { image: 0x3000 }));
+        // The default's fall-back, as the binder's.
+        assert_eq!(at(&w, 0xe000_0002, 7), Ok(Cached::Header(0xc000)));
+        assert_eq!(at(&w, u32::MAX, 0), Ok(Cached::Header(0xc000)));
     }
 
     #[test]
