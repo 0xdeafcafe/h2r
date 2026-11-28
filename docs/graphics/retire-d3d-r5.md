@@ -253,7 +253,9 @@ A guest pass that keeps a strip on the guest leaves the kept strips empty
 until a complete one. A view block that differs stops the arm for the BSP
 (`sky_cut_view`), as does a strip whose stencil differs from the one its
 place drew with in the last complete pass (`sky_cut_stencil`): a replay
-draws with its template's stencil. A ready arm never returns a pass to
+draws with its template's stencil.
+
+A ready arm never returns a pass to
 the guest: a cut refused before its commit draws no sky that pass,
 `scene_dropped_sky_<why>` (`unloaded`, `strips`, `rows`, `constants`,
 `device`, `pass`). Counters: `sky_cut_drawn`, the drops, and the
