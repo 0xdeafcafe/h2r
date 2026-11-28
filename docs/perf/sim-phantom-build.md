@@ -1,8 +1,8 @@
 # The phantoms' action build: what it costs and how it gets cheap
 
-Status: Option 1, the alias and its journal (lane P1), is built and on by default. On the laptop it is 22% faster per match than the view with identical state hashes ([notes](notes/sim-10x.md#2026-11-22-the-phantom-alias-against-the-view-on-the-laptop)); its film runs are pending. Lanes P0 and P2 are design.
-Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample_checked`, `Builder::alias`, `Builder::view`, `Builder::action`), `crates/runtime/runtime/src/executor.rs` (`SecondExecutor::alias`, `Alias`), `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
-Switch: `impl.sim.phantom-alias` (on; `-impl.sim.phantom-alias` builds in the view) and `H2_PHANTOM_BUILD_CHECK=1`, both in [switches.md](../runtime/switches.md).
+Status: Option 1, the alias and its journal (lane P1), is built and on by default. On the laptop it is 22% faster per match than the view with identical state hashes ([notes](notes/sim-10x.md#2026-11-22-the-phantom-alias-against-the-view-on-the-laptop)); its film runs are pending. The input stage in Rust (lane P2) is built and on by default; its check-mode and differential runs are pending. Lanes P0, P3 and P4 are design.
+Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample_checked`, `Builder::alias`, `Builder::view`, `Builder::rust`, `Builder::action`), `crates/rewrites/engine/src/sim_seats/input.rs`, `crates/runtime/runtime/src/executor.rs` (`SecondExecutor::alias`, `Alias`), `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
+Switch: `impl.sim.phantom-alias` (on; `-impl.sim.phantom-alias` builds in the view), `impl.sim.phantom-input` (on; `-impl.sim.phantom-input` runs the input stage in the guest) and `H2_PHANTOM_BUILD_CHECK=1`, all in [switches.md](../runtime/switches.md).
 
 Each tick a sim host turns every phantom's pad into a retail action by
 running the title's own local action builder in a private view of guest
@@ -203,18 +203,73 @@ answer, and a seat whose outcome, action bytes or history differ counts
 in `wall.phantom_build_mismatches` (the first eight are logged). Each path
 keeps its own history, so each runs as it would alone.
 
+### The input stage in Rust
+
+Four of the six calls are the input stage: they turn the seat's pad and
+history into the records the builder reads. `Builder::action` runs each
+in Rust (`engine::sim_seats::input`) under `impl.sim.phantom-input`, in
+the guest's order and on the same alias or view, with the camera origin
+`0x1557c0` still a guest call between them (**Code**).
+
+| Piece | Entry | What the Rust writes | Floats |
+|---|---|---|---|
+| `bind` | `0x1872d0` | nothing when the control globals are active and the block holds the unit (every build but a seat's first); else the reset block, the facing from the unit's forward vector, three unit fields | two `fpatan`, one `fsqrt`, one `addss` |
+| `look_rates` | `0x190c34`, `0x218420` | the 0x1c-byte record at `0x51ea18` from profile bytes 0 to 6 | none: table entries |
+| `read_pads` | `0x124c00` | each handled port's raw record: counts, milliseconds and thresholds for 16 buttons, four axes past the 9000 dead zone | none |
+| `remap` | `0x217c40` | each handled port's abstract record at `0x51ea88` (16 buttons by layout slot, triggers, four axes, the look mode's swaps and inversion) and the latches at `0x51ebcc` | `fpatan`, `fsin`, `fcos`, `fsqrt` per stick; mode 2 and 3's diagonal shaping |
+
+How it stays exact:
+
+- **One piece, one commit.** A piece reads RAM, computes every byte the
+  entry stores into locals, and writes them at its end. A refusal has
+  written nothing, and the builder makes that piece's guest call instead
+  (`Builder::rust`). The other pieces still run in Rust.
+- **The call's float environment.** The x87 steps run on the x87 crate
+  from the x87 state of the registers the guest call starts with
+  (`load_fpu`), instruction for instruction, so precision control, the
+  stack's depth and rounding of each `fst` match. The SSE steps are
+  native `f32` in the original's operand order; they equal `mulss`,
+  `divss` and `comiss` only under round to nearest with no flush to zero,
+  so any other MXCSR refuses.
+- **What the phantom executor answers.** `read_pads` takes the pad
+  report from the workspace as the executor's `XInputGetState` override
+  does, for every port with a handle, with success.
+- **Refusals, by name** (`Refusal::name`, said once a builder):
+
+  | Name | When | Seen on a phantom |
+  |---|---|---|
+  | `input.mxcsr` | MXCSR not 0x1f80 in its controls | no: the gather's MXCSR |
+  | `input.x87` | an x87 step the crate stops on (a transcendental under a directed rounding mode) or an unmasked exception | no |
+  | `input.replay-record` | `0x4e61b9` set: the remap reads `0x4e630c` | no: the setup clears it |
+  | `input.look-helper` | look rates whose remap calls `0x218510` (profile bit 2 set, bit 0 clear) | no: the setup writes a zero profile |
+  | `input.slot` | a button order or layout slot past 16 | no: the Default layout's slots |
+  | `input.memory` | a read or write faults | only on a broken image |
+
+- **What it does not write**: the entries' stack locals. A later guest
+  call that read one uninitialised would see other bytes (**S**: none
+  known; the check mode is the proof).
+
+The stage stays clear of the aim-assist feature's hooks: `0x185be0` and
+`0x1a50a0` run under `0x186ab0`, and no input piece calls or writes their
+per-player host state.
+
+**Check mode** builds the reference arm on the other path with the guest
+input stage, so a mismatch counts either the path or the stage. With the
+alias off (or a flat-RAM image) the reference arm is a second view with
+the guest stage.
+
 ### The other options
 
 | # | Option | Saving, ms a tick | Exact? | Verdict |
 |---|---|---:|---|---|
 | 1 | Alias and journal (above) | 0.8 to 0.95 of the build, and the live side's faults (**S**) | by the differential | lane P1 |
-| 2 | Calls 1, 2 and 4 without a guest call: skip the bind when the history's unit matches and the control globals are active (the entry's own test); write the look-rate record from a copy taken at the seat's first build (its input is constant); the input read in Rust on the history bytes (integers only) | at most 0.03 (**S**): three of six calls | yes for 1 and 2 by construction; 4 by a differential on random pads | lane P2, only if P0 shows the per-call overhead is worth it |
+| 2 | The input stage in Rust (above): calls 1, 2, 4 and 5 | at most 0.04 (**S**): four of six calls | by the disc differentials and the check mode | lane P2, built |
 | 3 | Native ports allowed in the view (collision and object reads under the searches) | unknown until P0's access counts | each port already has its parity test | after P0 |
 | 4 | The four seats as local users 0 to 3 in one view: one input read, one remap, no undo between seats | under 0.05 after option 1 | **not known**: the user count is 4, not 1, and a later seat sees an earlier seat's search scratch | no lane |
 | 5 | A result kept across ticks | 0 | the aim search and the interaction search read moving objects every tick. Only call 2's record is constant, and option 2 takes it | no lane |
 | 6 | Seats built on several threads | wall only: no CPU saved, and a batch already fills the cores | yes (seats are independent, below) | no lane |
 | 7 | The build overlapped with the guest's tick | 0 | **no**: tick N's action is read by tick N's update straight after the gather. A build a tick late is a different match, as `H2_BOT_PIPELINE` is | no lane |
-| 8 | The builder tree in Rust over live state | all but about 0.05 | x87 and SSE floats across the whole tree, collision under it | not as a lane here; it is a [sim-rewrite](../engine/sim-rewrite.md) subsystem if option 1 leaves the guest work too high |
+| 8 | The builder tree in Rust over live state | all but about 0.05 | x87 and SSE floats across the whole tree, collision under it | lanes P3 and P4, on `sim_seats::look` and the [sim-rewrite](../engine/sim-rewrite.md) seats |
 | 9 | A copy-on-write view kept across ticks and patched from the live side's written pages | the faults, at the cost of a write watch on the live side and a copy of every page the tick wrote | yes | superseded by option 1, which copies only what the build wrote |
 
 **Order of the calls.** Seats are independent: each starts from the same
@@ -242,7 +297,9 @@ The lanes. Each is code only; the coordinator builds and runs.
 |---|---|---|---|---|
 | **P0** split | `PhantomCosts` gains: nanoseconds in the setup writes, in each of the six calls, in `written` plus `revert`, and in the read back; the guest accesses of each call (`CallOutcome::accesses`); the pages written per seat; and the process's minor faults inside `Builder::sample` (`getrusage`). The sim report prints them under `wall` as per-tick figures | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md) | none | metrics unit tests on the JSON, beside `phantom_costs_are_per_tick_beside_the_brains` |
 | **P1** alias and journal (built) | `Guest` has a write journal on the fast page table's write bit; `SecondExecutor::alias(main)`, `alias_continued` and `undo`; `Builder::action` takes the alias path under the switch and the view path without it. A check mode, `H2_PHANTOM_BUILD_CHECK=1`, runs both for every seat and counts seats whose outcome, action or history bytes differ (`wall.phantom_build_mismatches`) | `crates/runtime/runtime/src/guest.rs`, `guest/journal.rs`, `guest/view.rs`, `executor.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [second-executor.md](../runtime/second-executor.md), [switches.md](../runtime/switches.md) | `impl.sim.phantom-alias` | below |
-| **P2** small calls | Option 2 | `crates/extensions/game/src/bot_glue/retail_input.rs` | the same switch | the check mode of P1; a unit test of the input read against the lifted `0x124c00` on random pads and histories (`H2_XBE`) |
+| **P2** input stage (built) | Option 2: `bind`, `look_rates`, `read_pads`, `remap` in Rust, each falling back to its guest entry on a named refusal | `crates/rewrites/engine/src/sim_seats/input.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs` | `impl.sim.phantom-input` | the disc differentials `input_stage::*` in `crates/rewrites/engine/tests/sim_seats_differential.rs` (each piece against its lifted entry to the return, every byte outside the stack); `stage_tests` in `retail_input.rs`; the image test `retail_pad_sequence_matches_local_angles_target_and_fire` on the Rust stage; the check mode over the eight Lockout seeds |
+| **P3** builder body | `0x186ab0` in Rust over `sim_seats::look` (the control update's body), the dialog test and the unit queries as Rust, the searches still guest calls | `crates/rewrites/engine/src/sim_seats/`, `retail_input.rs` | a switch of its own | as P2. The aim-assist feature opens and closes per-player host state at `0x185be0` and `0x1a50a0`: a phantom's body must not run those hooks, or must save and restore what they touch |
+| **P4** searches | the interaction search `0x151110` and the target search `0x1a5370`/`0x1a54a0` without handing calls back | as P3 | as P3 | as P2, and the shadow gate's `sim.seats` group |
 
 P1's proof, in the order it is run:
 
@@ -300,6 +357,8 @@ P1's proof, in the order it is run:
 | The pipeline covers the thinks only | Code | `crates/live/bots/src/think.rs` |
 | The alias, the journal and its undo on every exit | Code | `executor.rs` (`alias`, `Alias`), `guest/journal.rs`, `guest/view.rs` (`alias_ram`, `end_alias`) |
 | Per-seat undo, the stack window, the clock at the tick's first seat only | Code | `retail_input.rs` (`Builder::alias`), test `later_seats_of_a_tick_see_the_first_gathers_world_on_both_paths` |
+| The input stage's four entries, their stores and floats | E | `h2 disasm` of `0x1872d0`, `0x190c34`, `0x218420`, `0x124c00`, `0x217c40` (with its jump table `0x21840c`) |
+| Each piece writes only at its end and falls back per piece | Code | `input.rs`, `retail_input.rs` (`Builder::rust`), test `retail_input_binds_the_requested_seat_and_keeps_its_history_private` |
 | The split of the 1.03 ms, every saving, the 0.3 ms outcome | S | lane P0, then P1's runs |
 
 No game was run for this page; it is static reading, so the agent API
@@ -316,6 +375,11 @@ was not used. P0 adds the report fields the API's sim report lacks.
   gather's ESP (the alias path puts back the window above that).
 - That no callee reads the time-stamp counter.
 - The cost of a snapshot on a host that copies (Linux).
+- The input stage's disc differentials and its check-mode run: written,
+  not yet run. Until they pass, its exactness is the reading of the
+  entries above.
+- That no later guest call reads a stack local the input stage's entries
+  left (the Rust writes none).
 
 ## Related
 
