@@ -107,17 +107,6 @@ impl Switches {
     }
 }
 
-/// Whether the native renderer is on: always, as there is no other path.
-/// Callers drop the check as their files are next touched.
-pub fn native_render_on(_: &Switches) -> bool {
-    true
-}
-
-/// Whether the Rust visibility producers are on: always.
-pub fn native_visibility_on(_: &Switches) -> bool {
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 pub const ID: &str = "native-gels";
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

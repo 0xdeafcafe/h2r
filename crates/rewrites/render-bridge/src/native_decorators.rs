@@ -42,8 +42,8 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 pub const ID: &str = "native-decorators";
 
 /// Whether the native decorators are on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// What draws the decorators: boot's glue over the loaded world and the

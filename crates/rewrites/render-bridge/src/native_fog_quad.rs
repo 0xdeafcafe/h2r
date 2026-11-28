@@ -57,8 +57,8 @@ fn host() -> Option<Arc<dyn Host>> {
 }
 
 /// Whether the cut is placed: with the native renderer.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// A quad the cut cannot draw, by cause: the host's too, for a quad placed

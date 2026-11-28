@@ -2311,13 +2311,8 @@ impl Feature for FrameSceneStep {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // Off with the native renderer: no hooks, nothing held. On: the
-        // scene being written and the last one sealed, both rebuilt every
-        // frame from guest memory; a load marks the next one a cut.
-        if !hooks::switches::native_render_on(b.switches()) {
-            b.snapshot(hooks::SnapshotPolicy::Stateless);
-            return Ok(());
-        }
+        // The scene being written and the last one sealed, both rebuilt
+        // every frame from guest memory; a load marks the next one a cut.
         b.snapshot(hooks::SnapshotPolicy::section(Vec::new, |_, _| {
             forget();
             Ok(())
@@ -2506,12 +2501,6 @@ mod tests {
         assert_eq!(captured.horizontal_factor, 0.75);
         assert_eq!(image.payload.downcast_ref::<u32>(), Some(&19));
         assert!(take_present_image().is_none());
-    }
-
-    #[test]
-    fn the_step_is_on_with_the_native_renderer_only() {
-        let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
-        assert!(on(""));
     }
 
     #[test]

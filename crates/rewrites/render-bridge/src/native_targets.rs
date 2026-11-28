@@ -424,7 +424,7 @@ fn finish_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32
 /// Whether the native targets are placed: with the native renderer on,
 /// unless `native-targets=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches) && switches.feature(ID, true)
+    switches.feature(ID, true)
 }
 
 fn select_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {

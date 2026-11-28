@@ -211,10 +211,6 @@ impl Feature for NativeMapWork {
             || crate::native_lights::on(b.switches())
             || crate::native_fog::on(b.switches())
             || crate::native_water::on(b.switches());
-        // The master switch off places nothing.
-        if !hooks::switches::native_render_on(b.switches()) {
-            return Ok(());
-        }
         // Boot resets this derived state after loading the feature sections.
         b.snapshot(SnapshotPolicy::Stateless);
         b.game().on_start("native_map_reset", |_| reset());

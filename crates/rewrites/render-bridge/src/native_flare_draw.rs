@@ -176,7 +176,7 @@ pub fn same(cut: Option<&GlowDraw>, guest: Option<([f32; 4], f32)>) -> bool {
 /// Whether the native flare draw is placed: with the native renderer on,
 /// unless `native-flare-draw=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches) && switches.feature(ID, true)
+    switches.feature(ID, true)
 }
 
 fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {

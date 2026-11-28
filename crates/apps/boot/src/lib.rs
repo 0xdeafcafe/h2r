@@ -1217,9 +1217,7 @@ fn run_configured(
     // The live mirror's camera layer reads the sealed frame scene
     // (docs/editor/live-mirror.md, "Cameras"): why this run seals none.
     #[cfg(feature = "gpu")]
-    let scene_camera_off = if render_hooks != film::RenderHooks::Gpu
-        || !hooks::switches::native_render_on(features.switches())
-    {
+    let scene_camera_off = if render_hooks != film::RenderHooks::Gpu {
         Some("native rendering is off")
     } else if !features
         .switches()
@@ -1232,9 +1230,7 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let (world_line_present, debug_capture_unavailable) = {
         let sources = std::mem::take(&mut host.world_line_sources);
-        let disabled = if render_hooks != film::RenderHooks::Gpu
-            || !hooks::switches::native_render_on(features.switches())
-        {
+        let disabled = if render_hooks != film::RenderHooks::Gpu {
             Some((
                 agent::editor::MarkAvailability::NativeOff,
                 "native rendering is off",

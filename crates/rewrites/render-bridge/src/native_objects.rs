@@ -36,8 +36,8 @@ pub const ID: &str = "native-objects";
 /// The view slot the layer-3 objects draw in: slot 1, with the opaque base.
 pub const SLOT: ViewSlot = ViewSlot::OpaqueBase;
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// What the host draws natively right now.

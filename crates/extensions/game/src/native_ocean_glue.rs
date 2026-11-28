@@ -21,13 +21,13 @@ use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
 use native_render::object_streams::StreamFormats;
-use native_render::ocean_gpu::{self, OceanDraw, OceanGrid, OceanProgram, OceanSet, OceanSource};
+use native_render::ocean_gpu::{self, OceanDraw, OceanGrid, OceanTarget, OceanProgram, OceanSet, OceanSource};
 use render_bridge::water_end::{self, ocean};
 use tags::material::{Material, TextureSource};
 use tags::shader::AnimatedProperty;
 
-use crate::native_lights_glue::DeviceMemory;
-use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready, palettes_hold};
+use frame_types::Slot;
+use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready, };
 
 /// The ocean of one loaded BSP: what its pass compiles from.
 pub struct OceanData {
@@ -126,8 +126,7 @@ struct Cached {
     grid: Option<Arc<OceanGrid>>,
 }
 
-struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+struct Glue {
     state: State,
     cached: Mutex<Cached>,
 }
@@ -154,7 +153,7 @@ fn grid_key(vertices: u32, quads: &[[u16; 4]]) -> u64 {
     h.finish()
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     fn program(&self, ready: &Arc<Ready>, data: &OceanData, mem: &dyn GuestMemory, kind: u8) -> Result<Arc<OceanProgram>, ocean::Cause> {
         let world = Arc::as_ptr(ready) as usize;
         let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
@@ -196,7 +195,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> water_end::OceanHost for Glue<B> {
+impl water_end::OceanHost for Glue {
     fn draw(&self, mem: &mut dyn GuestMemory, draw: &ocean::Draw, quads: &frame_scene::late::WaterComposite) -> Result<(), ocean::Cause> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -209,16 +208,13 @@ impl<B: d3d::backend::Backend + Send + 'static> water_end::OceanHost for Glue<B>
         }
         let program = self.program(&ready, data, &*mem, draw.stream.kind)?;
         let grid = self.grid(&program, &*mem, &draw.stream, &quads.quads)?;
-        let Ok(mut d) = self.device.lock() else { return Err("device") };
-        if !palettes_hold(&data.palettes, &|n| d.stage_palette(&ReadMemory(&*mem), n)) {
-            return Err("palette");
+        // The reflection and refraction targets (0x15, 0x16) and the
+        // palettes the stages read come from the frame's targets.
+        if !program.sampled().is_empty() {
+            unimplemented!("ocean: render targets sampled from the frame's targets");
         }
-        let mut headers = Vec::new();
-        let mut sizes = Vec::new();
-        for t in program.sampled() {
-            let header = crate::native_water_glue::target_header(&*mem, u32::from(t)).ok_or("target")?;
-            sizes.push(d.surface_size(&DeviceMemory(&mut *mem), header).ok_or("target")?);
-            headers.push(header);
+        if data.palettes.iter().any(Option::is_some) {
+            unimplemented!("ocean: stage palettes from the device");
         }
         let pass = OceanPass {
             data: Arc::clone(&ready),
@@ -227,17 +223,9 @@ impl<B: d3d::backend::Backend + Send + 'static> water_end::OceanHost for Glue<B>
             rows: draw.ocean.rows.map(|r| r.map(f32::from_bits)),
             structure: draw.ocean.structure,
             time: native_render::layer_pass::render_time(&ReadMemory(&*mem)),
-            headers,
-            sizes,
-            view: None,
-            w_clip: None,
         };
-        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Water, view, ranges: 1, slots: Vec::new() };
-        match d.external_stage_now(&mut DeviceMemory(mem), None, plan, Box::new(pass)) {
-            Ok(true) => Ok(()),
-            _ => Err("draw"),
-        }
+        crate::native_targets_glue::push(&*mem, Slot::AfterLights, pass);
+        Ok(())
     }
 }
 
@@ -250,73 +238,69 @@ struct OceanPass {
     rows: [[f32; 4]; 3],
     structure: frame_scene::StructureParameters,
     time: Option<f64>,
-    /// Targets `0x15`/`0x16` in [`OceanProgram::sampled`]'s order: their
-    /// texture headers and guest sizes.
-    headers: Vec<u32>,
-    sizes: Vec<(u32, u32)>,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    w_clip: Option<([f32; 2], bool)>,
 }
 
-impl d3d::ExternalPass for OceanPass {
-    // The words are the call's, the program and grid loaded: a scene
-    // replay can record it again.
-    fn replays_scene(&self) -> bool {
-        true
+impl native_render::Stage for OceanPass {
+    fn name(&self) -> &'static str {
+        "ocean"
     }
 
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        self.headers.clone()
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        let depth = self.program.pass.program.state.as_ref().is_some_and(|s| s.depth_write);
-        d3d::ExternalWrites { color: true, depth_stencil: depth }
-    }
-
-    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
-        let Some(view) = self.view else { water_end::ocean_unported("view") };
-        let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
-        if gpu.as_ref().is_none_or(|(d, set)| d != t.device || !set.holds(&self.program)) {
-            let images: &[(Stage, Image)] = self.data.ocean.get().and_then(|d| d.as_ref().as_ref().ok()).map_or(&[], |d| &d.images);
-            let mut stage_image = |s: Stage| images.iter().find(|(k, _)| *k == s).map(|(_, i)| i.clone());
-            match OceanSet::new(t.device, t.queue, Arc::clone(&self.program), &mut stage_image) {
-                Ok(set) => *gpu = Some((t.device.clone(), set)),
-                Err(why) => {
-                    eprintln!("native-ocean: the ocean set does not upload ({why})");
-                    water_end::ocean_unported("program");
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> native_render::StageWork {
+        let Some(w_clip) = view.w_clip else { unimplemented!("ocean: the view's W-buffer clip") };
+        let (data, program, grid) = (Arc::clone(&self.data), Arc::clone(&self.program), Arc::clone(&self.grid));
+        let (rows, structure, time) = (self.rows, self.structure, self.time);
+        let (device, queue, uploads) = (t.device.clone(), t.queue.clone(), t.uploads.clone());
+        let (color, depth, formats) = (t.color.clone(), t.depth.clone(), (t.color_format, t.depth_format));
+        let (guest_size, size, z_scale, constants) = (view.guest_size, view.size, view.z_scale, view.constants);
+        crate::native_targets_glue::encoded(move |encoder| {
+            let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
+            if gpu.as_ref().is_none_or(|(d, set)| *d != device || !set.holds(&program)) {
+                let images: &[(Stage, Image)] = data.ocean.get().and_then(|d| d.as_ref().as_ref().ok()).map_or(&[], |d| &d.images);
+                let mut stage_image = |s: Stage| images.iter().find(|(k, _)| *k == s).map(|(_, i)| i.clone());
+                match OceanSet::new(&device, &queue, Arc::clone(&program), &mut stage_image) {
+                    Ok(set) => *gpu = Some((device.clone(), set)),
+                    Err(why) => {
+                        eprintln!("native-ocean: the ocean set does not upload ({why})");
+                        water_end::ocean_unported("program");
+                    }
                 }
             }
-        }
-        let Some((_, set)) = gpu.as_mut() else { return 0 };
-        let draw = OceanDraw {
-            view,
-            w_clip: self.w_clip,
-            rows: self.rows,
-            structure: &self.structure,
-            time: self.time,
-            grid: &self.grid,
-            target_sizes: &self.sizes,
-        };
-        match set.record(&mut t, &draw) {
-            Ok(()) => 1,
-            Err(cause) => water_end::ocean_unported(cause),
-        }
+            let Some((_, set)) = gpu.as_mut() else { return };
+            let draw = OceanDraw {
+                view: constants,
+                w_clip: Some(w_clip),
+                rows,
+                structure: &structure,
+                time,
+                grid: &grid,
+                target_sizes: &[],
+            };
+            let mut target = OceanTarget {
+                device: &device,
+                queue: &queue,
+                uploads: &uploads,
+                encoder,
+                color: &color,
+                color_format: formats.0,
+                depth: &depth,
+                depth_format: formats.1,
+                viewport: [0.0, 0.0, size.0 as f32, size.1 as f32],
+                guest_size,
+                size,
+                z_scale,
+                sampled: &[],
+            };
+            if let Err(cause) = set.record(&mut target, &draw) {
+                water_end::ocean_unported(cause);
+            }
+        })
     }
 }
 
 /// Installs the ocean host over the world's state
 /// (`native_world_glue::install`).
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
-    water_end::set_ocean_host(Arc::new(Glue { device: Arc::clone(device), state, cached: Mutex::new(Cached::default()) }));
+pub fn install(state: State) {
+    water_end::set_ocean_host(Arc::new(Glue { state, cached: Mutex::new(Cached::default()) }));
 }
 
 #[cfg(test)]

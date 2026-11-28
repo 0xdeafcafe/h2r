@@ -51,8 +51,8 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world";
 /// Whether the native world is on: the native renderer's master switch.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// How a record's fade byte becomes the display's stipple choice in the

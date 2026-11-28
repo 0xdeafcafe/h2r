@@ -28,8 +28,8 @@ pub const COLOUR_ARGS: u32 = 7;
 pub const SCREEN_ARGS: u32 = 4;
 
 /// Whether the native post is on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// The caller's floating-point state at the call: the numbers are the

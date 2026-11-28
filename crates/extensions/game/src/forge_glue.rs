@@ -84,10 +84,7 @@ pub fn monitor_bodies() -> Vec<forge::look::body::Draw> {
 /// (`monitor_model`). Without either, a model look is held and the marker
 /// shows with the reason.
 pub fn bodies_drawn() -> bool {
-    forge::look::BODIES_DRAWN
-        && cfg!(feature = "gpu")
-        && hooks::Switches::from_env()
-            .is_ok_and(|s| hooks::switches::native_render_on(&s))
+    forge::look::BODIES_DRAWN && cfg!(feature = "gpu")
 }
 
 /// What this machine draws as a monitor: the renderer's declaration and

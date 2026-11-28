@@ -205,9 +205,6 @@ impl Feature for RenderFrame {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !hooks::switches::native_render_on(b.switches()) {
-            return Ok(());
-        }
         b.snapshot(SnapshotPolicy::Stateless);
         let me = self.clone();
         b.raw().implement(&points::RENDER_FRAME, "render: the frame step", move |cpu, ctx, _| {

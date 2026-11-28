@@ -38,8 +38,8 @@ pub use ui_overlay::MenuRefusal;
 pub use walk::{WalkQuad, WalkText, WalkWidget};
 
 /// Whether the native UI and HUD are on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// The HUD's widget quads drawn with their material read in Rust, the

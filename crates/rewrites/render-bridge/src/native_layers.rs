@@ -140,7 +140,7 @@ pub fn caller(layer: u32, ret: u32) -> Option<LayerCaller> {
 /// Whether the stage is placed: with the native renderer on, unless
 /// `frame-scene.layers=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches) && switches.feature(ID, true)
+    switches.feature(ID, true)
 }
 
 /// What draws the layers: boot's glue over the plan, the GPU world and
