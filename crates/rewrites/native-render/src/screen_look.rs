@@ -412,13 +412,15 @@ pub fn template_look(
             Some(TextureSource::Lightmap) => return Err(ScreenRefusal::Lightmap),
         };
     }
-    let state = pass_state(&applied.render_states)
+    let mut state = pass_state(&applied.render_states)
         .and_then(PassState::device_stencil_only)
-        .and_then(PassState::no_depth_offset)
         .map_err(ScreenRefusal::State)?;
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }
+    // The depth neither tested nor written: a polygon offset moves
+    // nothing the pass draws.
+    state.depth_offset = None;
     // A combiner constant reads a value through its binding; the pixel
     // side's sizes are 1 by 1 and the instance's scalar its own, resolved.
     let pixel = imp
@@ -844,6 +846,30 @@ mod tests {
             state(RenderStateType::ZWriteEnable, 0),
         ];
         assert_eq!(refusal(imp), ScreenRefusal::Depth, "a depth test");
+    }
+
+    #[test]
+    fn a_polygon_offset_without_a_depth_test_draws_as_it_is() {
+        let offset = [
+            state(RenderStateType::SolidOffsetEnable, 1),
+            state(RenderStateType::PolygonOffsetZOffset, (-4.0f32).to_bits()),
+            state(RenderStateType::PolygonOffsetZSlopeScale, 1.0f32.to_bits()),
+        ];
+        let mut imp = implementation(0);
+        imp.render_states.extend(offset);
+        let look = screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0, &[]).expect("drawn");
+        assert_eq!(look.state.depth_offset, None, "nothing to offset");
+        let mut imp = implementation(0);
+        imp.render_states = vec![
+            state(RenderStateType::AlphaBlendEnable, 0),
+            state(RenderStateType::ZEnable, 1),
+            state(RenderStateType::ZWriteEnable, 0),
+        ];
+        imp.render_states.extend(offset);
+        assert_eq!(
+            screen_look(&material(TEMPLATE_LAYER, 1, vec![imp]), 0, 0, &[]).unwrap_err(),
+            ScreenRefusal::Depth
+        );
     }
 
     /// `effects\screen_effects\blur`'s second pass (`copy_texaccum_to_fb`'s
