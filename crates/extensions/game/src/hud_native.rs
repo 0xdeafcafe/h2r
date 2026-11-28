@@ -437,8 +437,13 @@ pub fn draw_string(
     run: &StringRun,
 ) -> bool {
     const FRAME: [u32; 2] = [640, 480];
-    let Some(overlay) = build_string(run, FRAME, ClipRect::full(FRAME)) else { return false };
-    crate::hud_overlay::place_text(mem, overlay, frame_scene::ViewSlot::Hud)
+    let Some(overlay) = build_string(run, FRAME, ClipRect::full(FRAME)) else {
+        unimplemented!("strings: font {}'s runs do not fit one overlay", run.font)
+    };
+    if let Err(why) = crate::hud_overlay::place_string(mem, overlay, frame_scene::ViewSlot::Hud) {
+        unimplemented!("strings: font {}: {why}", run.font)
+    }
+    true
 }
 
 /// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),

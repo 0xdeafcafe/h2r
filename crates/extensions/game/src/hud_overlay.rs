@@ -156,6 +156,44 @@ pub(crate) fn place_text(
     place(mem, Arc::new(part), assets)
 }
 
+/// The assets strings draw with while no map is loaded (the boot and
+/// loading screens): glyph pages alone, no map art.
+static NO_MAP_ASSETS: std::sync::LazyLock<Arc<Mutex<OverlayAssets>>> =
+    std::sync::LazyLock::new(|| Arc::new(Mutex::new(OverlayAssets::default())));
+
+/// A string's runs (`hud_native::draw_string`) placed like [`place_text`],
+/// but a string always draws: with no map loaded it uses glyph pages of
+/// its own, and full pages are cleared and filled again. `Err` names what
+/// stopped it.
+pub(crate) fn place_string(mem: &mut dyn GuestMemory, mut part: Overlay, view: ViewSlot) -> Result<(), String> {
+    part.set_slot(view);
+    let assets = slot(mem).map_or_else(|| NO_MAP_ASSETS.clone(), |(_, a)| a);
+    let fonts = fonts().ok_or("the disc's fonts are not readable yet")?;
+    {
+        let (scale, side) = atlas_for(crate::render_aspect::layout_output());
+        let mut a = assets.lock().unwrap_or_else(|e| e.into_inner());
+        if a.glyphs.side() != side || ATLAS_SCALE.load(Ordering::Relaxed) != scale {
+            a.glyphs = GlyphPages::new(side);
+            a.generation += 1;
+        }
+        ATLAS_SCALE.store(scale, Ordering::Relaxed);
+        ATLAS_SIDE.store(side, Ordering::Relaxed);
+        match fill_glyphs(&mut a.glyphs, &part, &fonts, scale) {
+            Ok(()) => {}
+            Err(MissingGlyph { why: GlyphMissing::Room, .. }) => {
+                a.glyphs = GlyphPages::new(side);
+                a.generation += 1;
+                fill_glyphs(&mut a.glyphs, &part, &fonts, scale)
+                    .map_err(|m| format!("font {} glyph {}: {:?} in empty pages", m.font, m.index, m.why))?;
+            }
+            Err(m) => return Err(format!("font {} glyph {}: {:?}", m.font, m.index, m.why)),
+        }
+    }
+    let _ = render_bridge::scene_step::with_overlay(|o| o.append(&part));
+    place(mem, Arc::new(part), assets);
+    Ok(())
+}
+
 /// Decodes the images `part`'s quads name into `assets`, their material's
 /// and their shader stages': whether each did.
 /// [`decode_images`], naming the image that did not decode.
