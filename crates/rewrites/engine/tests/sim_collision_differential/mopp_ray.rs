@@ -1,28 +1,22 @@
-//! Entry I, `0x00301800`: the general MOPP ray's parity arm against the
-//! lifted guest. The setup and the float interpreter run on the IR
-//! interpreter with nothing stubbed; the callbacks they reach are invented
-//! and answered by the run loop: the collection's child method (the
-//! instanced one at `0x00244bb0`, whose keys the arm observes, or one at an
-//! invented address, whose keys it cannot see), the child shape's ray
-//! method, which lowers the collector's fraction for some keys, and an
-//! optional filter that rejects some keys. The arm's observers run where
-//! the installer puts them, and each case checks:
-//!
-//! - the arm's outcome: matched, or unverified for a stated reason, never a
-//!   mismatch;
-//! - the keys the guest passed to the collection against a native-only
-//!   run of the walk with the same callbacks.
+//! Entry I, `0x00301800`: the general MOPP ray in Rust
+//! ([`arm::CollectorCast`]) against the lifted guest. The setup and the
+//! float interpreter run on the IR interpreter with nothing stubbed; the
+//! callbacks they reach are invented and answered by the run loop: the
+//! collection's child method (the instanced one at `0x00244bb0`, or one at
+//! an invented address), the child shape's ray method, which lowers the
+//! collector's fraction for some keys, and an optional filter that rejects
+//! some keys. Each case drives the cast with the same callbacks and checks
+//! every callback (target, registers, arguments, the temporary body), the
+//! keys the collection got and every byte the guest left above its stack.
 //!
 //! Programs are `sim_collision::synth::random_mopp` and hand ones for every
-//! opcode family, with rays on and across their thresholds. A last test
-//! changes the bytecode under a warm world (same header, same revision) so
-//! the walk follows the old program, and the arm must report the mismatch.
+//! opcode family, with rays on and across their thresholds.
 use super::*;
 use engine::sim_collision::layout::mopp_ray as l;
 use engine::sim_collision::mopp_ray as arm;
 use mopp::Code;
 use sim_collision::mopp::ray::{Constants, Event, Precision, Ray, RayWalk};
-use sim_collision::{Bail, RayParity};
+use sim_collision::Bail;
 
 const VM: u32 = 0x0063_6000;
 const INPUT: u32 = 0x0063_6100;
@@ -262,59 +256,33 @@ impl Callback {
     }
 }
 
-/// The guest query with the arm's observers where the installer puts them.
-fn run(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &mut Ram<'_>, world: &CollisionWorld) -> Run {
-    run_callbacks(oracle, c, m, world, None, false)
-}
-
 fn run_callbacks(
     oracle: &mut Oracle<'_>,
     c: &CpuAbi,
     m: &mut Ram<'_>,
-    world: &CollisionWorld,
-    mut trace: Option<&mut Vec<(Callback, CpuAbi)>>,
+    trace: &mut Vec<(Callback, CpuAbi)>,
     change_inputs: bool,
 ) -> Run {
     let mut cpu = ir_cpu(c);
     let mut pc = c.eip;
     let mut out = Run::default();
-    let mut observation: Option<arm::RayObservation> = None;
     for _ in 0..4_000_000 {
         cpu.eip = pc;
         if pc == HARNESS_EXIT {
-            observation
-                .take()
-                .expect("missing ray entry")
-                .finish(&*m, world);
             return out;
         }
         if pc == OPCODE_TRAP {
-            // The open observation drops with the run, as for a guest that
-            // never returns.
             out.trapped = true;
             return out;
         }
-        if pc == points::COLLISION_MOPP_RAY.base {
-            observation = Some(arm::begin_observed(
-                1,
-                &lifted::cpu::from_interp(&cpu),
-                &mut *m,
-                world,
-            ));
-        } else if pc == points::SIM_MOPP_RAY.base {
+        if pc == points::SIM_MOPP_RAY.base {
             out.enters += 1;
-            arm::enter(1, &lifted::cpu::from_interp(&cpu), &*m);
         } else if let Some(argc) = Callback::argc(pc) {
-            if pc == l::INSTANCE_CHILD {
-                arm::key(1, &lifted::cpu::from_interp(&cpu), &*m);
-            }
             let sp = cpu.gpr[4];
             let args = (0..argc).map(|i| word(m, sp + 4 + i * 4)).collect();
             let call = Callback::new(pc, cpu.gpr[1], sp, args, m);
             let eax = call.answer(m, &mut out.keys, change_inputs);
-            if let Some(t) = &mut trace {
-                t.push((call, lifted::cpu::from_interp(&cpu)));
-            }
+            trace.push((call, lifted::cpu::from_interp(&cpu)));
             pc = ret(&mut cpu, m, argc * 4, eax);
             continue;
         }
@@ -326,74 +294,69 @@ fn run_callbacks(
     panic!("step limit at {pc:#x}");
 }
 
-/// What one case's arm recorded.
-fn outcome(world: &CollisionWorld) -> RayParity {
-    world.stats().ray
+/// What one cast compared.
+#[derive(Default)]
+struct Cast {
+    rejected: u32,
+    rays: u32,
+    nested: bool,
 }
 
-/// Run `case` on a fresh world and check it. `Some(true)`:
-/// compared to the end; `Some(false)`: unverified; `None`: skipped
-/// (a trap the guest would assert on).
-fn check_case(
+/// Run the guest on `guest` and the cast on a copy, with the same
+/// callbacks, and compare. `None`: the walk declines (the guest would
+/// assert, or the float environment or root is off the exact path).
+fn check_cast(
     oracle: &mut Oracle<'_>,
     image: &[u8],
-    rng: &mut Rng,
+    cpu: &CpuAbi,
+    mut guest: Ram<'_>,
     case: &Case,
+    change_inputs: bool,
     label: &str,
-) -> Option<bool> {
+) -> Option<Cast> {
     static EPOCH: Epoch = Epoch::new();
     let expected = simulate(image, case);
-    if expected == Err(Bail::Data) {
-        return None;
-    }
     let world = CollisionWorld::new(&EPOCH);
-    let (c, mut m) = setup(image, rng, case);
-    let got = run(oracle, &c, &mut m, &world);
-    let r = outcome(&world);
-    assert_eq!(arm::open_queries(), 0, "{label}: a query stayed open");
-    if got.trapped {
-        // The walk could not run to its trap: the float environment or
-        // the root declined first.
-        assert!(
-            expected.is_err(),
-            "{label}: the guest trapped, the walk did not"
-        );
+    let mut native = guest.clone();
+    let mut trace = Vec::new();
+    let observed = run_callbacks(oracle, cpu, &mut guest, &mut trace, change_inputs);
+    if observed.trapped || expected.is_err() {
+        assert!(expected.is_err(), "{label}: the guest trapped, the walk did not");
         return None;
     }
-    assert_eq!(
-        r.mismatched,
-        0,
-        "{label}: {}, control {:#x}, {} program bytes",
-        r.first_mismatch.as_deref().unwrap_or(""),
-        case.control,
-        case.code.bytecode.len()
-    );
-    assert!(got.enters > 0, "{label}: the interpreter never ran");
-    let unverified: u64 = r.unverified.iter().sum();
-    assert_eq!(
-        r.matched + r.fraction_moved + unverified,
-        1,
-        "{label}: one query"
-    );
-    match expected {
-        Ok(keys) => {
-            assert_eq!(
-                got.keys, keys,
-                "{label}: keys, from {:?}, to {:?}",
-                case.from, case.to
-            );
-            if case.instanced && !case.filter {
-                assert_eq!(r.matched, 1, "{label}: observed keys, not matched: {r:?}");
-            }
-            Some(r.matched == 1)
-        }
-        Err(why) => {
-            if why == Bail::Env {
-                assert_eq!(r.unverified[Bail::Env as usize], 1, "{label}");
-            }
-            Some(false)
-        }
+    assert!(observed.enters > 0, "{label}: the interpreter never ran");
+    if !change_inputs {
+        assert_eq!(Ok(&observed.keys), expected.as_ref(), "{label}: keys");
     }
+    let mut cast = arm::CollectorCast::begin(cpu, &mut native, &world).unwrap();
+    let (mut returned, mut keys, mut out) = (*cpu, Vec::new(), Cast::default());
+    for (want, regs) in trace {
+        let call = cast
+            .next(&mut native, &returned)
+            .unwrap()
+            .expect("missing guest callback");
+        let sp = call.esp(cpu.esp);
+        assert_eq!(call.eax, Some(regs.eax), "{label}: callback EAX");
+        assert_eq!(call.edx, Some(regs.edx), "{label}: callback vtable");
+        assert_eq!(call.edi, Some(regs.edi), "{label}: callback key");
+        if let Some(esi) = call.esi {
+            assert_eq!(esi, regs.esi, "{label}: callback context");
+        }
+        let got = Callback::new(call.target, call.ecx.unwrap(), sp, call.args, &native);
+        assert_eq!(want, got, "{label}: callback");
+        if got.target == FAKE_FILTER && !accepted(got.args[3]) {
+            out.rejected += 1;
+        }
+        out.rays += u32::from(got.target == FAKE_SHAPE_RAY);
+        out.nested |= observed.enters > 1;
+        returned.eax = got.answer(&mut native, &mut keys, change_inputs);
+    }
+    assert!(cast.next(&mut native, &returned).unwrap().is_none(), "{label}: extra callback");
+    assert_eq!(keys, observed.keys, "{label}: keys");
+    for addr in guest.touched(&native, cpu.esp, (0, cpu.esp)) {
+        assert_eq!(native.get(addr), guest.get(addr), "{label}: memory {addr:#x}");
+    }
+    Some(out)
 }
 
 /// A frame coordinate: whole cells (on thresholds), eighths, and a little
@@ -453,7 +416,7 @@ fn random_case(image: &[u8], rng: &mut Rng, n: u32) -> Case {
 }
 
 #[test]
-fn mopp_ray_parity_matches_the_guest() {
+fn mopp_ray_matches_the_guest() {
     with_oracle("collision MOPP ray differential test", |oracle, image| {
         const CASES: u32 = 1500;
         let (mut compared, mut skipped) = (0u32, 0u32);
@@ -461,24 +424,20 @@ fn mopp_ray_parity_matches_the_guest() {
             let mut rng =
                 Rng(0x6a09_e667_f3bc_c908 ^ u64::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
             let case = random_case(image, &mut rng, n);
-            match check_case(oracle, image, &mut rng, &case, &format!("case {n}")) {
-                Some(full) => compared += u32::from(full),
+            let (cpu, ram) = setup(image, &mut rng, &case);
+            match check_cast(oracle, image, &cpu, ram, &case, false, &format!("case {n}")) {
+                Some(_) => compared += 1,
                 None => skipped += 1,
             }
         }
-        eprintln!(
-            "MOPP ray: {compared} compared to the end, {skipped} trap programs skipped, of {CASES}"
-        );
-        assert!(
-            compared * 3 > CASES,
-            "MOPP ray: only {compared} of {CASES} compared"
-        );
+        eprintln!("MOPP ray: {compared} compared, {skipped} declined walks, of {CASES}");
+        assert!(compared * 3 > CASES, "MOPP ray: only {compared} of {CASES} compared");
     });
 }
 
 /// Every opcode family the walk takes, with rays starting, ending and
-/// running along their thresholds, in single and double precision, keys
-/// observed: every case must match to the end.
+/// running along their thresholds, in single and double precision: every
+/// case must be answered and match.
 #[test]
 fn mopp_ray_edges_match_the_guest() {
     with_oracle("collision MOPP ray edges", |oracle, image| {
@@ -531,10 +490,10 @@ fn mopp_ray_edges_match_the_guest() {
                         let mut rng = Rng(u64::from(n) | 1);
                         let label =
                             format!("program {p} axis {axis} {a}..{b} control {control:#x}");
-                        assert_eq!(
-                            check_case(oracle, image, &mut rng, &case, &label),
-                            Some(true),
-                            "{label}: not compared to the end"
+                        let (cpu, ram) = setup(image, &mut rng, &case);
+                        assert!(
+                            check_cast(oracle, image, &cpu, ram, &case, false, &label).is_some(),
+                            "{label}: declined"
                         );
                         n += 1;
                     }
@@ -544,63 +503,14 @@ fn mopp_ray_edges_match_the_guest() {
     });
 }
 
-/// The arm reports a walk that does not follow the guest: the world holds
-/// a program decoded from one bytecode, the guest runs another with the
-/// same header (the revision cannot see it in this memory), and the guest's
-/// answer is the one the collection gets.
-#[test]
-fn mopp_ray_reports_a_deliberate_mismatch() {
-    with_oracle("collision MOPP ray mismatch", |oracle, image| {
-        static EPOCH: Epoch = Epoch::new();
-        let world = CollisionWorld::new(&EPOCH);
-        let mut code = Code {
-            offset: [0.0; 3],
-            scale: 1.0,
-            info: mopp::code::RETAIL_INFO,
-            bytecode: vec![0x10, 10, 20, 1, 0x31, 0x32],
-        };
-        let mut case = Case {
-            from: world_point(image, &code, [0.0, 5.0, 5.0], 0.0),
-            to: world_point(image, &code, [30.0, 5.0, 5.0], 0.0),
-            code: code.clone(),
-            instanced: true,
-            filter: false,
-            fraction: 1.0,
-            control: 0x027f,
-        };
-        let mut rng = Rng(7);
-        let (c, mut m) = setup(image, &mut rng, &case);
-        run(oracle, &c, &mut m, &world);
-        assert_eq!(outcome(&world).matched, 1, "the first program matches");
-        // The low threshold moves; the walk still has the old one.
-        code.bytecode[1] = 25;
-        case.code = code;
-        let (c, mut m) = setup(image, &mut rng, &case);
-        let got = run(oracle, &c, &mut m, &world);
-        let r = outcome(&world);
-        assert_eq!((r.matched, r.mismatched), (1, 1), "{r:?}");
-        let first = r.first_mismatch.unwrap();
-        assert!(first.contains("different step"), "{first}");
-        assert_eq!(
-            Ok(got.keys),
-            simulate(image, &case),
-            "the guest's answer stands"
-        );
-        assert_eq!(arm::open_queries(), 0);
-    });
-}
-
 /// Compare the full sequence, including rejected terminals, arbitrary
-/// collection methods, the guest scratch addresses, and every visible VM
-/// byte. Both trials start with their own copy of the fixture.
+/// collection methods, callbacks that change the VM's inputs, the guest
+/// scratch addresses, and every visible VM byte. Both trials start with
+/// their own copy of the fixture.
 #[test]
 fn native_collector_callbacks_match_the_guest() {
     with_oracle("general ray collector callbacks", |oracle, image| {
-        static EPOCH: Epoch = Epoch::new();
-        let mut compared = 0;
-        let mut rejected = 0;
-        let mut rays = 0;
-        let mut nested = false;
+        let (mut compared, mut rejected, mut rays, mut nested) = (0, 0, 0, false);
         let mut rng = Rng(0x6134_9875);
         for n in 0..120 {
             let mut case = random_case(image, &mut rng, n);
@@ -620,58 +530,14 @@ fn native_collector_callbacks_match_the_guest() {
                 case.instanced = n & 2 != 0;
                 case.fraction = 1.;
             }
-            if simulate(image, &case).is_err() {
-                continue;
+            let (cpu, ram) = setup(image, &mut rng, &case);
+            let label = format!("case {n}");
+            if let Some(cast) = check_cast(oracle, image, &cpu, ram, &case, n % 3 != 0, &label) {
+                compared += 1;
+                rejected += cast.rejected;
+                rays += cast.rays;
+                nested |= cast.nested;
             }
-            let change_inputs = n % 3 != 0;
-            let world = CollisionWorld::new(&EPOCH);
-            let (cpu, mut guest) = setup(image, &mut rng, &case);
-            let mut native = guest.clone();
-            let mut trace = Vec::new();
-            let observed = run_callbacks(
-                oracle,
-                &cpu,
-                &mut guest,
-                &world,
-                Some(&mut trace),
-                change_inputs,
-            );
-            let mut cast = arm::CollectorCast::begin(&cpu, &mut native, &world).unwrap();
-            let (mut returned, mut keys) = (cpu, Vec::new());
-            for (want, regs) in trace {
-                let call = cast
-                    .next(&mut native, &returned)
-                    .unwrap()
-                    .expect("missing guest callback");
-                let sp = call.esp(cpu.esp);
-                assert_eq!(call.eax, Some(regs.eax), "callback EAX");
-                assert_eq!(call.edx, Some(regs.edx), "callback vtable");
-                assert_eq!(call.edi, Some(regs.edi), "callback key");
-                if let Some(esi) = call.esi {
-                    assert_eq!(esi, regs.esi, "callback context");
-                }
-                let got = Callback::new(call.target, call.ecx.unwrap(), sp, call.args, &native);
-                assert_eq!(want, got, "callback in case {n}");
-                if got.target == FAKE_FILTER && !accepted(got.args[3]) {
-                    rejected += 1;
-                }
-                rays += u32::from(got.target == FAKE_SHAPE_RAY);
-                nested |= observed.enters > 1;
-                returned.eax = got.answer(&mut native, &mut keys, change_inputs);
-            }
-            assert!(
-                cast.next(&mut native, &returned).unwrap().is_none(),
-                "extra callback"
-            );
-            assert_eq!(keys, observed.keys);
-            for addr in guest.touched(&native, cpu.esp, (0, cpu.esp)) {
-                assert_eq!(
-                    native.get(addr),
-                    guest.get(addr),
-                    "case {n}: memory {addr:#x}"
-                );
-            }
-            compared += 1;
         }
         assert!(compared >= 8 && rejected > 0 && rays > 0 && nested);
     });

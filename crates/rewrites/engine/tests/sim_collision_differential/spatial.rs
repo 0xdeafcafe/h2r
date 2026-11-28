@@ -1,8 +1,10 @@
-//! The installed G/H dispatch: compare every byte and register on the
-//! authoritative exits, and check the prediction against the lifted guest
-//! elsewhere. The graph and references are invented.
+//! The installed G/H dispatch against the lifted guest: every byte and
+//! register on the frame-exact exits, and on the contested flood and the
+//! populated visit the return value, the output, the epochs, the active
+//! bytes, the mark tables and both PE flags, entered with PE clear. The
+//! graph and references are invented.
 use super::*;
-use adapter::spatial_parity::dispatch;
+use adapter::spatial::dispatch;
 use sim_collision::Entry as Spatial;
 
 fn guest(m: &Ram<'_>) -> GuestRam {
@@ -110,8 +112,7 @@ fn the_authoritative_spatial_exits_replay_the_full_frame() {
             let (mut original, mut native) = (guest(&m), guest(&m));
             let mut expected = ir_cpu(&c);
             oracle.run(&mut expected, &mut original, entry.addr());
-            let (t, prediction) = dispatch(entry, &mut c, &mut native.0, &world).unwrap();
-            assert!(prediction.is_none());
+            let t = dispatch(entry, &mut c, &mut native.0, &world).unwrap();
             c.eip = t.expect("exact exit").target_pc;
             assert_eq!(ir_cpu(&c), expected, "{entry:?} linked={linked}");
             let start = native.0.mappings()[0].physical_start as usize;
@@ -128,52 +129,43 @@ fn the_authoritative_spatial_exits_replay_the_full_frame() {
 }
 
 #[test]
-fn spatial_predictions_match_the_lifted_guest_and_catch_extra_marks() {
-    with_oracle("spatial parity outputs", |oracle, image| {
+fn contested_spatial_calls_match_the_lifted_guest_from_pe_clear() {
+    with_oracle("contested spatial calls", |oracle, image| {
         static EPOCH: Epoch = Epoch::new();
         for entry in [Spatial::ClusterFlood, Spatial::ObjectVisit] {
             let world = CollisionWorld::new(&EPOCH);
-            for corrupt in [false, true] {
-                let (mut c, m) = fixture(image, entry, true, false, 0);
-                let mut gm = guest(&m);
-                let before = c;
-                let (t, prediction) = dispatch(entry, &mut c, &mut gm.0, &world).unwrap();
-                assert!(t.is_none());
-                let prediction = prediction.expect("outer prediction");
-                assert_eq!(before, c);
-                if entry == Spatial::ClusterFlood {
-                    // The outer plan includes G's recursive self-call.
-                    let mut child = c;
-                    child.esp -= 0x2c;
-                    gm.0.set_u32(child.esp, 0x0014_a690).unwrap();
-                    let (t, nested) = dispatch(entry, &mut child, &mut gm.0, &world).unwrap();
-                    assert!(t.is_none() && nested.is_none());
-                }
-                let mut returned = ir_cpu(&c);
-                oracle.run(&mut returned, &mut gm, entry.addr());
-                if corrupt {
-                    let base = if entry == Spatial::ClusterFlood {
-                        layout::CLUSTER_MARKS
-                    } else {
-                        layout::OBJECT_MARKS
-                    };
-                    let at = base + 20;
-                    gm.0.set_u32(at, gm.0.u32(at).unwrap() ^ 1).unwrap();
-                }
-                let returned = lifted::cpu::from_interp(&returned);
-                world.record_spatial(entry, prediction.compare(&returned, &gm.0));
-                let stats = world.stats();
-                let p = if entry == Spatial::ClusterFlood {
-                    stats.flood
-                } else {
-                    stats.visit
-                };
-                assert_eq!(
-                    (p.matched, p.mismatched),
-                    (1, u64::from(corrupt)),
-                    "{entry:?}: {p:?}"
-                );
-            }
+            let (mut c, m) = fixture(image, entry, true, false, 0);
+            // The live game's state: neither PE flag sticky.
+            (c.mxcsr, c.x87.status) = (0x1f80, 0);
+            let (mut original, mut native) = (guest(&m), guest(&m));
+            let mut expected = ir_cpu(&c);
+            oracle.run(&mut expected, &mut original, entry.addr());
+            let expected = lifted::cpu::from_interp(&expected);
+            let t = dispatch(entry, &mut c, &mut native.0, &world)
+                .unwrap()
+                .expect("a contested call is answered");
+            assert_eq!(t.target_pc, expected.eip, "{entry:?}");
+            assert_eq!(c.eax, expected.eax, "{entry:?} EAX");
+            assert_eq!(
+                (c.ebx, c.ebp, c.esi, c.edi, c.esp),
+                (expected.ebx, expected.ebp, expected.esi, expected.edi, expected.esp),
+                "{entry:?} callee-saved"
+            );
+            assert_eq!(c.mxcsr, expected.mxcsr, "{entry:?} MXCSR");
+            assert_eq!(c.x87.status & 0x20, expected.x87.status & 0x20, "{entry:?} x87 PE");
+            // Everything but the dead stack: the frame below the entry and
+            // the argument slots the callee pops (G and H reuse them).
+            let start = native.0.mappings()[0].physical_start as usize;
+            let other = original.0.mappings()[0].physical_start as usize;
+            let first = &native.0.physical_ram()[start..start + image.len()];
+            let second = &original.0.physical_ram()[other..other + image.len()];
+            let dead = (STACK - 0x480) as usize..(STACK + 4 + 0x1c) as usize;
+            let differs = first
+                .iter()
+                .zip(second)
+                .enumerate()
+                .position(|(i, (a, b))| a != b && !dead.contains(&i));
+            assert_eq!(differs, None, "{entry:?}");
         }
     });
 }

@@ -1,6 +1,8 @@
-//! Result parity for the vector test and the outer BSP context walk. A
-//! straight walk or a crossing exit is answered natively; the matcher path
-//! runs lifted and is compared at its return.
+//! The installed vector test (C) and outer BSP context walk (D). A straight
+//! walk or a crossing exit replays its frame; the matcher path commits R,
+//! the context and AL ([`super::commit`]). [`Prediction`] is the same plan
+//! as expected bytes, the differential tests' oracle against the lifted
+//! entry.
 use super::{
     Bail, CollisionMemory, CollisionWorld, Plan, Read,
     crossing::{self, Exit},
@@ -12,7 +14,6 @@ use sim_collision::Entry;
 use sim_collision::GuestRead;
 
 pub struct Prediction {
-    entry: Entry,
     addr: u32,
     al: u8,
     record: Vec<u8>,
@@ -45,7 +46,7 @@ impl Prediction {
     fn from_plan(
         plan: Plan,
         g: &impl CollisionMemory,
-        entry: Entry,
+        _entry: Entry,
         exit: Option<Exit>,
     ) -> Result<Self, Bail> {
         let context = if let Some(addr) = plan.context {
@@ -70,7 +71,6 @@ impl Prediction {
                 Ok::<_, Bail>(())
             })?;
         Ok(Self {
-            entry,
             addr: plan.record,
             al: u8::from(plan.outcome.hit.is_some()),
             record,
@@ -96,15 +96,6 @@ impl Prediction {
             Some(exit) => exit.difference(c, g),
             None => Ok(None),
         }
-    }
-
-    /// Compare at the lifted return and count the result towards the
-    /// entry's gate.
-    pub fn settle(self, c: &runtime::CpuAbi, g: &impl CollisionMemory, world: &CollisionWorld) {
-        let result = self
-            .compare(c.eax as u8, g)
-            .and_then(|d| if d.is_some() { Ok(d) } else { self.compare_exit(c, g) });
-        world.record_crossing(self.entry, result, self.exit.is_some());
     }
 
     pub fn compare(&self, al: u8, g: &impl CollisionMemory) -> Result<Option<String>, Bail> {
@@ -141,73 +132,61 @@ impl Prediction {
     }
 }
 
-type Dispatch = Result<(Option<TransferAbi>, Option<Prediction>), GuestFault>;
+type Dispatch = Result<Option<TransferAbi>, GuestFault>;
 
-/// The recursive near child is included in its outer prediction. A D
-/// entry called by C runs lifted too, so C's oracle remains independent.
+/// The plan, and whether the frame-exact exits (straight and crossing)
+/// may answer: not for D under C's wrapper, whose frame is the wrapper's.
 fn gather(
     c: &CpuAbi,
     g: &mut Guest,
     world: &CollisionWorld,
     entry: Entry,
-) -> Result<Option<(Plan, bool)>, Bail> {
+) -> Result<(Plan, bool), Bail> {
     if g.has_trap() {
         return Err(Bail::Trap);
     }
     if entry == Entry::VectorContext {
         super::vector_env(c)?;
         let caller = Read(&*g, (0, 0)).u32(c.esp)?;
-        if caller == super::layout::CONTEXT_RECURSIVE_RETURN {
-            return Ok(None);
-        }
-        let can_answer = caller != super::straight::WRAPPER_AFTER_WALK;
-        Ok(Some((plan_context(c, g, world)?, can_answer)))
+        let exact = caller != super::straight::WRAPPER_AFTER_WALK
+            && caller != super::layout::CONTEXT_RECURSIVE_RETURN;
+        Ok((plan_context(c, g, world)?, exact))
     } else {
-        Ok(Some((plan_vector(c, g, world)?, true)))
+        Ok((plan_vector(c, g, world)?, true))
     }
 }
 
 fn dispatch(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld, entry: Entry) -> Dispatch {
-    let predicted = match gather(c, g, world, entry) {
-        Ok(None) => return Ok((None, None)),
-        Ok(Some((plan, can_answer))) => {
-            if let Some(walk) = plan.outcome.straight.filter(|_| can_answer) {
-                let ret = super::straight::commit(c, g, &plan, walk)?;
-                world.record(entry, &Ok(()));
-                return Ok((Some(ret), None));
-            }
-            // D under the wrapper stays lifted: C's comparison owns it.
-            let exit = if can_answer { Exit::model(c, g, &plan) } else { None };
-            if let Some(exit) = exit.as_ref() {
-                let ret = crossing::commit(c, g, &plan, exit)?;
-                world.answered_crossing(entry);
-                world.record(entry, &Ok(()));
-                return Ok((Some(ret), None));
-            }
-            Prediction::from_plan(plan, g, entry, exit)
-        }
-        Err(why) => Err(why),
-    };
-    match predicted {
-        Ok(p) => Ok((None, Some(p))),
+    let (plan, exact) = match gather(c, g, world, entry) {
+        Ok(p) => p,
         Err(why) => {
             world.record::<()>(entry, &Err(why));
-            if entry == Entry::VectorContext {
-                world.record_context(Err(why));
-            } else {
-                world.record_vector(Err(why));
-            }
-            Ok((None, None))
+            return Ok(None);
+        }
+    };
+    world.record(entry, &Ok(()));
+    if exact {
+        if let Some(walk) = plan.outcome.straight {
+            return super::straight::commit(c, g, &plan, walk).map(Some);
+        }
+        if let Some(exit) = Exit::model(c, g, &plan) {
+            let ret = crossing::commit(c, g, &plan, &exit)?;
+            world.answered_crossing(entry);
+            return Ok(Some(ret));
         }
     }
+    // The matcher path (and D under C's wrapper or its own recursion):
+    // R, the context, AL, the PE flags and the epilogue's flags.
+    super::commit(c, g, plan).map(Some)
 }
 
-/// Return the exact answer or hand the lifted call's prediction to its
-/// caller. A declined plan returns neither.
+/// Entry C as installed: every admitted call is answered in Rust. A
+/// declined plan returns `None` with its bail recorded.
 pub fn dispatch_vector(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Dispatch {
     dispatch(c, g, world, Entry::VectorTest)
 }
 
+/// Entry D as installed; see [`dispatch_vector`].
 pub fn dispatch_context(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Dispatch {
     dispatch(c, g, world, Entry::VectorContext)
 }
@@ -218,8 +197,10 @@ mod tests {
     use runtime::{Guest, guest::Permissions};
     use sim_core::Epoch;
 
+    /// D's own recursion is planned like any other call, never left to
+    /// the guest: here its unmapped arguments decline it by name.
     #[test]
-    fn recursive_child_needs_no_prediction_or_context_read() {
+    fn a_recursive_child_is_planned_not_run_lifted() {
         static EPOCH: Epoch = Epoch::new();
         let world = CollisionWorld::new(&EPOCH);
         let mut g = Guest::new();
@@ -227,14 +208,16 @@ mod tests {
         g.map(addr, 4, 0, Permissions::RW).unwrap();
         let mut cpu = CpuAbi {
             esp: addr,
-            mxcsr: 0x1fa0,
+            mxcsr: 0x1f80,
             ..CpuAbi::default()
         };
+        cpu.x87.control = 0x027f;
+        cpu.x87.tag = 0xffff;
         g.set_u32(addr, super::super::layout::CONTEXT_RECURSIVE_RETURN)
             .unwrap();
-        let (ret, prediction) = dispatch_context(&mut cpu, &mut g, &world).unwrap();
-        assert!(ret.is_none() && prediction.is_none());
-        assert_eq!(world.stats().context, Default::default());
+        let _ = sim_collision::take_bail();
+        assert!(dispatch_context(&mut cpu, &mut g, &world).unwrap().is_none());
+        assert_eq!(sim_collision::take_bail(), Some((Entry::VectorContext, Bail::Fault)));
     }
 
     #[test]
@@ -247,8 +230,7 @@ mod tests {
             mxcsr: 0,
             ..CpuAbi::default()
         };
-        let (ret, prediction) = dispatch_context(&mut cpu, &mut g, &world).unwrap();
-        assert!(ret.is_none() && prediction.is_none());
+        assert!(dispatch_context(&mut cpu, &mut g, &world).unwrap().is_none());
         assert_eq!(
             world.stats().entries[Entry::VectorContext as usize].bails[Bail::Env as usize],
             1
@@ -263,7 +245,6 @@ mod tests {
         let mut g = Guest::new();
         g.map(addr, 0x1000, 0, Permissions::RW).unwrap();
         let p = Prediction {
-            entry: Entry::VectorContext,
             addr,
             al: 0,
             record: vec![0; record::SIZE as usize],

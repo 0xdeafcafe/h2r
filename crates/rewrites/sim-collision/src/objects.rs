@@ -255,14 +255,14 @@ pub fn object_visit(
     object_visit_inexact(g, q, topology).map(|(v, _)| v)
 }
 
-/// [`object_visit`], and whether one of its SSE operations was inexact:
-/// the guest set PE (`sim_core::det::Checked::sse_inexact`).
+/// [`object_visit`], and which of its SSE and x87 operations were
+/// inexact: the PE flags the guest sets in MXCSR and the x87 status word.
 pub fn object_visit_inexact(
     g: &impl GuestRead,
     q: &VisitQuery,
     topology: impl FnOnce() -> Result<Arc<Topology>, Bail>,
-) -> Result<(Visit, bool), Bail> {
-    checked(|r| Some(visit(g, r, q, topology).map(|v| (v, r.sse_inexact()))))
+) -> Result<(Visit, crate::Inexact), Bail> {
+    checked(|r| Some(visit(g, r, q, topology).map(|v| (v, crate::Inexact::of(r)))))
         .unwrap_or(Err(Bail::Float))
 }
 

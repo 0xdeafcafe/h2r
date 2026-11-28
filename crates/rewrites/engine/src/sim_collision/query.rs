@@ -1,5 +1,6 @@
 //! Whole collision query (entry J). All marks and result bytes are planned in
-//! private storage. The agent query and the runtime comparison use the same walk.
+//! private storage before any is written. The installed entry ([`query`])
+//! and the agent's read-only trace use the same walk.
 use super::{CollisionMemory, CollisionWorld, Read, consts, layout};
 use runtime::CpuAbi;
 use sim_collision::{Bail, Bsp, GuestRead, Hit, Segment, bsp::NONE};
@@ -11,9 +12,9 @@ pub use batch::{Trace, trace_batch};
 mod clusters;
 mod guards;
 pub(super) use guards::Guard;
-mod parity;
+mod native;
 mod relocate;
-pub use parity::{PendingQuery, Prediction, observe};
+pub use native::{Prediction, query};
 
 const SEGMENT_BSP: u32 = 0x004e_0340;
 const BREAKABLES: u32 = 0x004e_d280;

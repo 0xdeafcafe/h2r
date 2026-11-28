@@ -47,8 +47,8 @@ impl<'r> Chain<'r> {
     /// `fsqrt` in the guest's working precision.
     pub fn sqrt(self) -> Self {
         let value = match self.value {
-            Value::Single(x) => Value::Single(self.region.sqrt(x)),
-            Value::Double(x) => Value::Double(self.region.record64(host::sqrt64(x))),
+            Value::Single(x) => Value::Single(self.region.x87_32(&[x], || host::sqrt32(x))),
+            Value::Double(x) => Value::Double(self.region.x87_64(|| host::sqrt64(x))),
         };
         Self { value, ..self }
     }
@@ -72,10 +72,13 @@ impl<'r> Chain<'r> {
     /// `fist(p) m32int`. A rounded out-of-range value needs the guest's
     /// invalid conversion and declines the query.
     pub fn integer(self) -> Option<i32> {
-        let rounded = self.wide().round_ties_even();
-        (f64::from(i32::MIN)..=f64::from(i32::MAX))
-            .contains(&rounded)
-            .then_some(rounded as i32)
+        let wide = self.wide();
+        let rounded = wide.round_ties_even();
+        let fits = (f64::from(i32::MIN)..=f64::from(i32::MAX)).contains(&rounded);
+        if fits && rounded != wide {
+            self.region.x87_rounded();
+        }
+        fits.then_some(rounded as i32)
     }
 }
 
@@ -91,14 +94,16 @@ impl Neg for Chain<'_> {
 }
 
 macro_rules! binary {
-    ($trait:ident, $op:ident, $wide:ident) => {
+    ($trait:ident, $op:ident, $narrow:ident, $wide:ident) => {
         impl $trait for Chain<'_> {
             type Output = Self;
             fn $op(self, other: Self) -> Self {
                 let value = match (self.value, other.value) {
-                    (Value::Single(a), Value::Single(b)) => Value::Single(self.region.$op(a, b)),
+                    (Value::Single(a), Value::Single(b)) => {
+                        Value::Single(self.region.x87_32(&[a, b], || host::$narrow(a, b)))
+                    }
                     (Value::Double(a), Value::Double(b)) => {
-                        Value::Double(self.region.record64(host::$wide(a, b)))
+                        Value::Double(self.region.x87_64(|| host::$wide(a, b)))
                     }
                     // A retail chain runs under one precision control.
                     _ => {
@@ -112,7 +117,7 @@ macro_rules! binary {
     };
 }
 
-binary!(Add, add, add64);
-binary!(Sub, sub, sub64);
-binary!(Mul, mul, mul64);
-binary!(Div, div, div64);
+binary!(Add, add, add32, add64);
+binary!(Sub, sub, sub32, sub64);
+binary!(Mul, mul, mul32, mul64);
+binary!(Div, div, div32, div64);

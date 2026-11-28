@@ -15,7 +15,7 @@
 //! precision control); the sphere and polygon tests are SSE scalar
 //! operations ([`Checked`]). Anything off the checked fast path declines
 //! the whole query.
-use crate::{Bail, GuestRead, store::Column};
+use crate::{Bail, GuestRead, Inexact, store::Column};
 use sim_core::det::{Chain, Checked, checked_inputs};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -598,14 +598,15 @@ impl Topology {
         self.cluster_flood_inexact(g, q).map(|(flood, _)| flood)
     }
 
-    /// [`Topology::cluster_flood`], and whether one of its SSE operations
-    /// was inexact: the guest set PE (`sim_core::det::Checked::sse_inexact`).
+    /// [`Topology::cluster_flood`], and which of its SSE and x87
+    /// operations were inexact: the PE flags the guest sets in MXCSR and
+    /// in the x87 status word.
     pub fn cluster_flood_inexact(
         &self,
         g: &impl GuestRead,
         q: &FloodQuery,
-    ) -> Result<(Flood, bool), Bail> {
-        sim_core::det::checked(|r| Some(self.flood(g, r, q).map(|f| (f, r.sse_inexact()))))
+    ) -> Result<(Flood, Inexact), Bail> {
+        sim_core::det::checked(|r| Some(self.flood(g, r, q).map(|f| (f, Inexact::of(r)))))
             .unwrap_or(Err(Bail::Float))
     }
 }

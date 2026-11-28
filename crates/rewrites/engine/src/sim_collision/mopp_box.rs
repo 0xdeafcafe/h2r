@@ -30,6 +30,8 @@ struct Plan {
     size: u32,
     keys_at: u32,
     corners: Corners,
+    /// A conversion rounded: the x87 status word's PE after the setup.
+    inexact: bool,
     keys: Vec<u32>,
 }
 
@@ -41,9 +43,9 @@ fn dead_depth(sp: u32, frames: u32) -> u32 {
 }
 
 fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Result<Plan, Bail> {
-    // One x87 register per load. The conversions set PE when inexact, and
-    // nothing here tracks that, so the flag must already be sticky.
-    if !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 1) || c.x87.status & l::X87_PE == 0 {
+    // One x87 register per load. The conversions set PE when inexact; the
+    // commit sets it as they would.
+    if !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 1) {
         return Err(Bail::Env);
     }
     let sp = c.esp;
@@ -59,7 +61,7 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     let min = m.vec3(aabb)?;
     let max = m.vec3(aabb.wrapping_add(l::AABB_MAX))?;
     let source = tree.source();
-    let corners = Corners::convert(min, max, source.origin, source.scale, c.x87.control)?;
+    let (corners, inexact) = Corners::convert_inexact(min, max, source.origin, source.scale, c.x87.control)?;
     let data = m.u32(array.wrapping_add(l::DATA))?;
     let size = m.u32(array.wrapping_add(l::SIZE))?;
     let capacity = m.u32(array.wrapping_add(l::CAPACITY))? & l::CAPACITY_MASK;
@@ -89,6 +91,7 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
         size,
         keys_at,
         corners,
+        inexact,
         keys,
     })
 }
@@ -112,6 +115,9 @@ impl Plan {
     }
 
     fn finish(&self, c: &mut CpuAbi) -> TransferAbi {
+        if self.inexact {
+            c.x87.status |= l::X87_PE;
+        }
         // The setup's epilogue keeps the flags of the root interpreter's add to ESP.
         let aligned = self.sp.wrapping_sub(4) & !15;
         add_flags(c, aligned.wrapping_sub(l::FLAGS_ESP), l::INTERPRETER_LOCALS);
@@ -293,6 +299,44 @@ mod tests {
         g.set_u32(data + 8, 2).unwrap();
         g.set_u32(vm + 4, 0).unwrap();
         assert!(!p.matches(&cpu, &g));
+    }
+
+    /// The live game enters with the x87 PE clear. The setup sets it only
+    /// when one of its six conversions rounds, as `fsub`, `fmul`, `fstp`
+    /// and `fistp` would.
+    #[test]
+    fn pe_clear_is_admitted_and_set_only_by_a_rounding_conversion() {
+        use runtime::{Guest, guest::Permissions};
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+        use sim_core::Epoch;
+
+        const MEM: u32 = 0x10000;
+        let (code, vm, aabb, array, data, stack) =
+            (MEM, MEM + 0x100, MEM + 0x200, MEM + 0x300, MEM + 0x400, MEM + 0xf00);
+        for (min_x, rounds) in [(0.0f32, false), (0.5, true), (0.3, true), (-2.0, false)] {
+            let mut g = Guest::new();
+            g.map(MEM, 0x1000, 0, Permissions::RW).unwrap();
+            g.set_u32(code + 12, 1.0f32.to_bits()).unwrap();
+            g.set_u32(code + SIZE, HEADER_BYTES + 1).unwrap();
+            g.set_u8(code + HEADER_BYTES, 0x31).unwrap(); // a single key
+            g.set_u32(aabb, min_x.to_bits()).unwrap();
+            g.set_u32(aabb + l::AABB_MAX, 2.0f32.to_bits()).unwrap();
+            g.set_u32(array + l::DATA, data).unwrap();
+            g.set_u32(array + l::CAPACITY, 4).unwrap();
+            for (i, value) in [0x12345678, code, aabb, array].into_iter().enumerate() {
+                g.set_u32(stack + 4 * i as u32, value).unwrap();
+            }
+            for control in [0x007f, 0x027f] {
+                let mut c = CpuAbi { ecx: vm, esp: stack, ..Default::default() };
+                c.x87.control = control;
+                c.x87.tag = 0xffff;
+                static EPOCH: Epoch = Epoch::new();
+                let world = CollisionWorld::new(&EPOCH);
+                assert!(mopp_box(&mut c, &mut g, &world).unwrap().is_some(), "min {min_x}");
+                assert_eq!(c.x87.status & l::X87_PE != 0, rounds, "min {min_x}, control {control:#x}");
+                g.set_u32(array + l::SIZE, 0).unwrap();
+            }
+        }
     }
 
     #[test]

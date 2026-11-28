@@ -40,6 +40,19 @@ impl Corners {
         scale: u32,
         control: u16,
     ) -> Result<Self, Bail> {
+        Self::convert_inexact(min, max, origin, scale, control).map(|(c, _)| c)
+    }
+
+    /// [`Corners::convert`], and whether a conversion was inexact: the
+    /// x87 status word's PE after the sequence (the `fsub`, `fmul`, the
+    /// `fstp m32` or the `fistp`).
+    pub fn convert_inexact(
+        min: [u32; 3],
+        max: [u32; 3],
+        origin: [u32; 3],
+        scale: u32,
+        control: u16,
+    ) -> Result<(Self, bool), Bail> {
         checked(|r| {
             let load = |bits: u32| Chain::load(r, control, f32::from_bits(bits));
             let full = |p: u32, a: usize| -> Option<i32> {
@@ -56,7 +69,7 @@ impl Corners {
                 c.lo[a] = full(min[a], a)?;
                 c.hi[a] = full(max[a], a)?;
             }
-            Some(c)
+            Some((c, r.x87_inexact()))
         })
         .ok_or(Bail::Float)
     }

@@ -477,8 +477,7 @@ mod tests {
         assert!(prediction.has_exit());
         let (mut g, _) = fixture();
         let mut c = entry;
-        let (ret, none) = vector_parity::dispatch_vector(&mut c, &mut g, &world).unwrap();
-        assert!(none.is_none(), "the first call is answered, not shadowed");
+        let ret = vector_parity::dispatch_vector(&mut c, &mut g, &world).unwrap();
         assert_eq!(ret.unwrap().target_pc, RETURN);
         assert_eq!((c.esp, c.eax & 0xff), (SP + 0x14, 0));
         assert_eq!((c.ebx, c.esi, c.edi, c.ebp), (entry.ebx, entry.esi, entry.edi, entry.ebp));
