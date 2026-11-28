@@ -118,6 +118,11 @@ impl Proof {
         if self.seen % RECHECK == 0 { Arm::Shadow } else { Arm::Own }
     }
 
+    /// Whether a draw of it differed: the guest's for the map.
+    pub(super) fn failed(&self) -> bool {
+        self.failed
+    }
+
     /// Whether Rust draws it, asked without counting a draw.
     pub(super) fn proven(&self) -> bool {
         !self.failed && self.clean >= PROOF_DRAWS

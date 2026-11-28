@@ -2813,6 +2813,13 @@ impl<B: Backend> Device<B> {
         self.draw_clip(mem)
     }
 
+    /// The bound colour target's size in guest pixels: the target
+    /// [`Self::clip_area`] cuts. Read only, for a pass placed in place of
+    /// draws (the native strings, docs/graphics/native-hud-overlay.md).
+    pub fn target_extent(&self, mem: &dyn GuestMemory) -> Result<(u32, u32), D3dError> {
+        self.target_size(mem)
+    }
+
     /// The `A8R8G8B8` entries of the palette bound at `stage` now
     /// (`SetPalette`), as the D3D path samples a P8 texture there: `None`
     /// when none is bound or it does not read. Read-only, for a native

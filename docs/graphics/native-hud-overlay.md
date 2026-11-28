@@ -1,8 +1,8 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's, which still draws it. The HUD's overlay items are tagged `ViewSlot::Hud`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `definitions.rs`, `sensor.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `hud_sensor.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `hud_sensor.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs`, `native_hud/definitions.rs` and `native_hud/sensor.rs`, and `hud-kit-core/src/walk_tests.rs`.
-Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust). All in [switches.md](../runtime/switches.md).
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order, and a string draw's site's strings are laid out and drawn by Rust as text runs. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's, which still draws it. The HUD's overlay items are tagged `ViewSlot::Hud`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `strings.rs`, `definitions.rs`, `sensor.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `hud_sensor.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `hud_sensor.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs`, `native_hud/strings.rs`, `native_hud/definitions.rs` and `native_hud/sensor.rs`, and `hud-kit-core/src/walk_tests.rs`.
+Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust) and [strings](#strings). All in [switches.md](../runtime/switches.md).
 
 The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
 
@@ -99,11 +99,12 @@ The widget's bitmap is engine texture 16 (`0x00019530`'s entry `0x00019817` bind
 | One mismatch keeps the shader on the guest's setup for the map | no item differs from the guest's on purpose |
 | A proven shader's quads drawn on a second target or clip fail it | the setup site does not read the viewport (split screen) |
 | One proven quad in 32 (`RECHECK`) runs the guest's setup and is checked again | a later difference is caught |
-| Refused: more than one pass implementation, per-draw engine inputs, engine-driven or animated states, a stage that is not the widget's bitmap, an instance bitmap or none, a blend the implementation does not set | each is something the guest's setup reads that the material does not |
+| Refused: more than one pass implementation, per-draw engine inputs, engine-driven or animated states, a stage that is not the widget's bitmap, the text stage, an instance bitmap or none, a blend the implementation does not set | each is something the guest's setup reads that the material does not |
+| A text shader's stage 0 is engine texture 15 (`hud_material::TEXT_STAGE_SOURCE`; `text_flash`, `dim_text_flash`): `StageTexture::Glyphs`. A text material takes it as the glyphs (`hud_native::predict_text`); a widget quad has no texture for it (`texture`) | the string draw's batch binds the glyph cache to stage 0 in its place and keeps the shader's combiner (`0x00035b90`, `+0x97`) |
 
 Skipping the setup leaves the shader cache at `0x00485b48` as the last guest setup left it, which is what the device holds, so the next guest setup compares against the right state.
 
-Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `proven`, `mismatch_words`, `mismatch_state`, `mismatch_stages`, `mismatch_corners`, `refused`, `recheck_failed`.
+Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `proven`, `mismatch_words`, `mismatch_state`, `mismatch_stages`, `mismatch_corners`, `refused`, `recheck_failed`. `render.scene` splits `refused` by cause (`refused_<cause>`: `HudRefusal::name`, or `inputs` for a quad, provider or clock that does not read; `hud_native::refusal_counters`).
 
 ## The walk in Rust
 
@@ -261,6 +262,41 @@ The fans the composite draws are the host's ([What is kept](#what-is-kept)). The
 
 Not built: the sensor drawn from Rust's list (its target, the blips and the fans as overlay items in slot `Hud`); the rest of the HUD render `0x0013954b` (the record's fill `0x0013992a`, then `0x0015ea50`, `0x00200462` and `0x001e6fe0` after the sensor: the messages and training); and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
 
+## Strings
+
+The string draw `0x0001f070` (`points::STRING_DRAW`; from `0x0001fa50`, 22 call sites, and the HUD's `0x0001fb10`) lays a string out through `0x0013f0e0` and pushes one screen quad a glyph (`0x0001f490`, `0x0001f3a0`, `0x000363a0`). `render_bridge::native_hud::strings` lays the same string out in Rust at the draw's entry and, once its site is proven, draws it as text runs over the host's glyph pages and leaves the draw out.
+
+```mermaid
+flowchart LR
+  E[STRING_DRAW 0x0001f070] --> L[strings::lay_out: font state, rectangle, UiText::shape]
+  L -->|refused| G[guest draw]
+  L -->|site unproven, or 1 in 64| S[guest draw, each glyph quad checked at the screen quad]
+  S -->|8 clean draws| E
+  L -->|site proven| R[Host::rust_string: hud_native::draw_string, place_text]
+  R --> X[ret 0x1c: draw left out, 0x004670c0 moved]
+```
+
+| Part | Guest | Rust |
+|---|---|---|
+| Call | EAX clip or 0, ECX rectangle or 0, stack `(&end, leading, &units, scale, record +0x58, +0x5c, keep)` | `StringCall::read` |
+| Site | `0x0001fa50`'s return (`[esp + 0x2034]` when the draw returns to `0x0001faf7`), else the draw's | `StringCall::site`, the proof's key |
+| Font state | `0x004e73a0` font, `a4` wrap bit, `a8` limit, `ac` justification (0 left, 1 right, 2 centre), `b0` colour, `c0` and `c4` shadow, `dc` tabs, `fe` and `0x004e7400` indents (`0x0013edb0`, `0x0013f470`) | `strings::lay_out` |
+| Rectangle | ECX's, or the frame less the window's corner (`0x0001f0da`) | the same |
+| Glyphs | `0x0013ef40`, `0x0013f700` | `UiText::shape`; a string that does not wrap must lay out the same in a rectangle `WIDE` wider (a line breaks after the glyph past the edge, wrap or not) |
+| Quads, colours | shadow one pixel right and down, then the glyph (`0x0013f9c2`) | `walk::text_colours`, `walk::text_quads` |
+| Material | the batch over the glyph cache with blend mode 0 (`0x000142f0`'s tables) | `OverlayMaterial::text` with that blend (`hud_native::build_string`): the pages' coverage times each run's colour |
+| Placement | the bound target and the draw's clip area | `Device::target_extent`, `Device::clip_area` (one rectangle), the fit the guest's draws carry; slot `Hud` in the HUD's scope, else `Ui` |
+
+| Rule | Why |
+|---|---|
+| A site is proven by 8 draws (`walk::PROOF_DRAWS`) whose every glyph quad matched Rust's at the screen quad (`native_ui_screen_fan`): corners and packed colour bit for bit, texels one to one with the glyph's size, in order and as many | Rust draws only what has been the guest's draw |
+| One draw in 64 (`walk::RECHECK`) of a proven site is the guest's and checked again | a later difference is caught |
+| A draw that differs keeps the site on the guest for the map (`differed`), with no layout | as a widget's draw |
+| Runs keep the quads' order, one run per stretch of one colour | a glyph's shadow under the next glyph stays under it |
+| A string left out moves the draw counter `0x004670c0` (`0x0001f0a2`) | the guest's draw moves it |
+
+Left to the guest, by name (`native_ui_overlay_string_<cause>`): the HUD's text widget (`hud`, the walk's), an end point (`end`), leading (`leading`), a scale past 1 (`scale`), the record's extra words (`extra`), a clip rectangle (`clip`), a draw that draws nothing (`off`), a font past 16 bits (`font`), tab stops (`tabs`), an indent (`indent`), a character limit (`limit`), no units (`empty`), a unit past 16 bits (`string`), a tab (`tab`), a private-use glyph (`icon`: buttons, the alignment tokens; `icons` swaps their units at the glyph lookup), a string the fonts do not shape (`shape`), a line that would break with no wrap (`overflow`), a colour outside 0..1 (`colour`), a glyph past the window (`clipped`, which `0x0013f700` cuts), a unit or state that does not read (`read`), no host fonts (`fonts`), no pass placed (`host`). Also `shadow_matched`, `shadow_differed`, `proven`, `drawn`, `unfinished` (a check with no return).
+
 ## What is kept
 
 A HUD item the overlay does not draw keeps its guest draw and is counted `scene_kept_overlay_<kind>_<cause>` (`native_hud::kept`; kinds and causes in [retire-d3d.md](retire-d3d.md#r6s-remainder)). The producer names the kind before it asks the host (`kept::begin`), the capture names the first refusal (`kept::refuse`, from `hud_overlay::Widget::plan`), and a draw taken by the resolved packet in place of the overlay is `packet` (`kept::carried`). Text, the motion sensor's fans and the HUD's screen-effect calls (`0x0022bbc0`) are counted the same way. A guest draw in the HUD scope that no producer offered is `untraced`.
@@ -294,6 +330,10 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That a name the fonts shape lands as the guest's `%s` does, and the UI values' layout (`hud_inputs::ui_value`: bytes 5 to 7 of the player's values at `+0x84`).
 - That a text shader resolves and proves (`predict_text` takes one whose only sampled stage is stage 0 with the widget's bitmap, **S**: the glyph cache is bound in its place), and that a run over the host's glyph pages lands on the pixels the guest's glyph cache gives: the pages are rasterised at the display's density and hold coverage alone.
 - That a string's quads, the window's pixels plus its corner (`WalkText::origin`), are the frame's pixels the overlay draws in (**S**).
+- That any retail string site proves (`native_ui_overlay_string_shadow_differed` counts one that does not), that the shape's lines are `0x0013ef40`'s for a string that does not wrap, and that a proven site's strings draw on the same pixels: the pass takes the target and clip at the draw's entry, and inside a menu canvas `render_aspect` picks a fit per guest quad (**S**: text quads take the canvas's).
+- That the string draw's callers read nothing it leaves in EAX, and that skipping its batch leaves no device state a later guest draw reads (**S**: each batch begins with its own state).
+- That the plain-text batch's combiner is the glyph's texture times the vertex colour: a run samples the pages' coverage alone (a private-use glyph, the only coloured ones, is the guest's).
+- That the 12 widget quads a frame `refused` counted in a 16-bot game were not `texture` too; `refused_<cause>` names them.
 - That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
 - That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
 - That retail sensor calls match (`sensor_differed` at zero), that no blip draw comes from elsewhere while the call runs, and that `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).

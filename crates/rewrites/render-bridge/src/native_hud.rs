@@ -13,6 +13,7 @@ pub mod modal_blur;
 mod model;
 mod outline;
 pub mod sensor;
+pub mod strings;
 mod ui;
 pub mod ui_overlay;
 pub mod walk;
@@ -207,6 +208,14 @@ pub trait Host: Send + Sync {
     /// guest's draw is left out. The host writes the widget's globals
     /// before it reads the material. False: nothing was drawn.
     fn rust_hud_text(&self, _mem: &mut dyn GuestMemory, _text: &WalkText) -> bool {
+        false
+    }
+
+    /// A proven string of the string draw laid out in Rust ([`strings`]):
+    /// true when the host drew every glyph quad of it as text runs over
+    /// its own glyph pages, so the string draw is left out. False:
+    /// nothing was drawn, and the guest draws the string.
+    fn rust_string(&self, _mem: &mut dyn GuestMemory, _run: &strings::StringRun) -> bool {
         false
     }
 
@@ -440,6 +449,41 @@ fn own_text(mem: &mut dyn GuestMemory, text: &WalkText) -> bool {
         ui::record(true);
     }
     drawn
+}
+
+/// A proven string's draw: the host's text runs.
+fn own_string(mem: &mut dyn GuestMemory, run: &strings::StringRun) -> bool {
+    let drawn = host().is_some_and(|host| host.rust_string(mem, run));
+    strings::owned(mem, drawn);
+    if drawn {
+        Stage::Ui.count(Metric::BuildsSkipped, run.quads.len() as u64);
+        ui::record(true);
+    }
+    drawn
+}
+
+/// The string draw's hooks ([`strings`]): Rust's layout and, once its
+/// site is proven, its draw at the entry; the check at the return.
+fn place_strings(b: &mut Builder) {
+    b.raw().before(&points::STRING_DRAW, "native_ui_string", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let owned = {
+            let mut mem = rt.memory();
+            let fonts = host().and_then(|host| host.ui_text(&*mem));
+            match strings::plan(&*mem, c.cpu.esp, c.cpu.eax, c.cpu.ecx, fonts.as_deref()) {
+                strings::Plan::Guest => false,
+                strings::Plan::Own(run) => own_string(&mut *mem, &run),
+            }
+        };
+        if !owned {
+            return Ok(Flow::Continue);
+        }
+        c.ret(strings::ARGUMENT_BYTES).map(Flow::Return)
+    }).context_only().optional();
+    b.raw().after(&points::STRING_DRAW, "native_ui_string_done", |_| {
+        strings::finish();
+        Ok(())
+    }).optional();
 }
 
 /// A walk Rust loops ([`walk::plan_loop`]): each widget shown is laid
@@ -814,6 +858,7 @@ impl Feature for NativeHud {
             place_walk(b);
             place_definitions(b);
             place_sensor(b);
+            place_strings(b);
         }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());

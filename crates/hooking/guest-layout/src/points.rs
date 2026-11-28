@@ -1557,6 +1557,12 @@ points! { ALL;
     HUD_BITMAP_WIDGET @ 0x0022_aff1: [fn(player: stack 0, record: stack 1, widget: stack 2, inputs: stack 3) ret 16], Optional; "docs/graphics/native-hud-overlay.md";
     /// A text widget's draw: its string, laid out and drawn.
     HUD_TEXT_WIDGET @ 0x0022_aa16: [fn(player: stack 0, record: stack 1, widget: stack 2, inputs: stack 3) ret 16], Optional; "docs/graphics/native-hud-overlay.md";
+    /// The string draw (`0x0001f070`, from `0x0001fa50` and the HUD's
+    /// `0x0001fb10`): EAX a clip rectangle or 0, ECX the rectangle or 0
+    /// (the frame), stack `(&end, leading, &units, scale, record +0x58,
+    /// record +0x5c, keep state)`, `ret 0x1c`. One screen quad a glyph
+    /// through the layout `0x0013f0e0`.
+    STRING_DRAW @ 0x0001_f070: [fn(clip: eax, rect: ecx, end: stack 0, leading: stack 1, units: stack 2, scale: stack 3, extra_a: stack 4, extra_b: stack 5, keep: stack 6) ret 28], Optional; "docs/graphics/native-hud-overlay.md";
     HUD_SENSOR_DRAW @ 0x001a_2823: [fn(screen: eax, user: ecx) ret 0], Optional; "docs/halo1/hud.md";
     /// One motion sensor blip's draw into the sensor's target, called by
     /// `0x001a2197` (return `0x001a2219`): its position (two `f32`), shade,

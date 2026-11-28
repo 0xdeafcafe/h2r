@@ -16,13 +16,15 @@
 //! setup, which is left out with the guest's draw; one quad in [`RECHECK`]
 //! is still set up by the guest and checked again.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayGlyph, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
 use map::TagId;
 use native_render::hud_material::{HudRefusal, HudShader, HudState, StageTexture};
+use render_bridge::native_hud::strings::StringRun;
+use render_bridge::native_hud::walk::GlyphQuad;
 use render_bridge::native_hud::{HudTagQuad, HudVertices, WalkText, WalkWidget, hud_inputs};
 use tags::material::ShaderLibrary;
 use timeline::native::Ui;
@@ -80,6 +82,34 @@ pub enum Unpredicted {
     Refused(HudRefusal),
     /// The quad's vertices, the HUD's inputs or the clock did not read.
     Inputs,
+}
+
+impl Unpredicted {
+    /// Its name in `native_ui_overlay_hud_rust_refused_<cause>`; `None`
+    /// while the map loads, which is no refusal.
+    pub fn cause(&self) -> Option<&'static str> {
+        match self {
+            Unpredicted::Loading => None,
+            Unpredicted::Refused(r) => Some(r.name()),
+            Unpredicted::Inputs => Some("inputs"),
+        }
+    }
+}
+
+static REFUSALS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
+
+/// A captured quad whose prediction is refused: counted, all together
+/// and by its cause.
+fn refused(why: &Unpredicted) {
+    let Some(cause) = why.cause() else { return };
+    Ui::OverlayHudRustRefused.count();
+    *REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += 1;
+}
+
+/// `native_ui_overlay_hud_rust_refused_<cause>` for every refusal counted.
+pub fn refusal_counters() -> Vec<(String, u64)> {
+    let counts = REFUSALS.lock().unwrap_or_else(|e| e.into_inner());
+    counts.iter().map(|(cause, &n)| (format!("native_ui_overlay_hud_rust_refused_{cause}"), n)).collect()
 }
 
 /// One shader's proof on this map.
@@ -236,11 +266,7 @@ pub fn wants_check(shader: u32) -> bool {
 pub fn check(at: &HudTagQuad, predicted: Result<Predicted, Unpredicted>, captured: &Overlay) {
     let predicted = match predicted {
         Ok(p) => p,
-        Err(Unpredicted::Loading) => return,
-        Err(_) => {
-            Ui::OverlayHudRustRefused.count();
-            return;
-        }
+        Err(why) => return refused(&why),
     };
     advance(at.shader, compare(&predicted, captured), captured);
 }
@@ -342,8 +368,8 @@ pub struct TextMaterial {
 }
 
 /// The material of text shader `datum` from the map. The glyphs take
-/// the widget bitmap's place, in stage 0 alone: a text run carries one
-/// set of coordinates.
+/// stage 0 alone, the text stage's place (`TEXT_STAGE_SOURCE`) or the
+/// widget bitmap's: a text run carries one set of coordinates.
 pub fn predict_text(mem: &dyn GuestMemory, datum: u32) -> Result<TextMaterial, Unpredicted> {
     let hud = shader(mem, datum)?;
     if !hud_inputs::provider_installed(mem) {
@@ -352,7 +378,8 @@ pub fn predict_text(mem: &dyn GuestMemory, datum: u32) -> Result<TextMaterial, U
     let inputs = |name: u32| hud_inputs::function_input(mem, name);
     let words = hud.words(render_time(mem), &inputs).map_err(Unpredicted::Refused)?;
     let sampled = sampled_stages(&words);
-    if let Some(stage) = (0..4).find(|&n| sampled[n] && (n != 0 || hud.stages[n] != StageTexture::Widget)) {
+    let glyphs = |stage: StageTexture| matches!(stage, StageTexture::Glyphs | StageTexture::Widget);
+    if let Some(stage) = (0..4).find(|&n| sampled[n] && (n != 0 || !glyphs(hud.stages[n]))) {
         return Err(Unpredicted::Refused(HudRefusal::Texture { stage }));
     }
     if !sampled[0] {
@@ -387,19 +414,19 @@ pub fn compare_text(m: &TextMaterial, captured: &Overlay) -> Result<(), Mismatch
 pub fn check_text(shader: u32, predicted: Result<TextMaterial, Unpredicted>, captured: &Overlay) {
     match predicted {
         Ok(m) => advance(shader, compare_text(&m, captured), captured),
-        Err(Unpredicted::Loading) => {}
-        Err(_) => Ui::OverlayHudRustRefused.count(),
+        Err(why) => refused(&why),
     }
 }
 
-/// The text's runs: its glyph quads in order, each run the quads next
-/// to each other in one colour (red, green, blue, alpha).
-fn runs(text: &WalkText) -> Vec<([f32; 4], Vec<OverlayGlyph>)> {
+/// A string's runs: its glyph quads in order, each run the quads next
+/// to each other in one colour (red, green, blue, alpha), placed at
+/// `origin` (the window's corner in the frame).
+fn runs(quads: &[GlyphQuad], origin: [f32; 2]) -> Vec<([f32; 4], Vec<OverlayGlyph>)> {
     let mut out: Vec<(u32, Vec<OverlayGlyph>)> = Vec::new();
-    for quad in &text.quads {
+    for quad in quads {
         // The quads are the window's; the overlay is the frame's.
         let [x0, y0, x1, y1] = quad.rect;
-        let [x, y] = text.origin;
+        let [x, y] = origin;
         let glyph = OverlayGlyph { index: quad.index, rect: [x0 + x, y0 + y, x1 + x, y1 + y] };
         match out.last_mut() {
             Some((colour, glyphs)) if *colour == quad.colour => glyphs.push(glyph),
@@ -420,7 +447,7 @@ pub fn build_text(m: &TextMaterial, text: &WalkText, size: [u32; 2], clip: ClipR
     let pages = OverlayTexture::Glyphs { font: text.font };
     let material = OverlayMaterial { program: Program::Shader { tag: text.shader }, texture: pages, sampler: m.sampler, blend: m.state.blend };
     let mut overlay = Overlay::new(size);
-    for (colour, glyphs) in runs(text) {
+    for (colour, glyphs) in runs(&text.quads, text.origin) {
         let index = overlay.push_text_run(material, clip, colour, &glyphs).ok()?;
         let item = &mut overlay.items[index as usize];
         item.alpha_test = m.state.alpha_test;
@@ -474,11 +501,46 @@ pub fn draw_text<B: d3d::Backend + Send + 'static>(
         set_fit(device, mem, enclosing);
         return false;
     }
-    let drawn = crate::hud_overlay::place_text(device, mem, overlay);
+    let drawn = crate::hud_overlay::place_text(device, mem, overlay, frame_scene::ViewSlot::Hud);
     if group.is_some() && !set_fit(device, mem, enclosing) {
         eprintln!("hud walk: the enclosing HUD fit was not restored after a text widget");
     }
     drawn
+}
+
+/// A string of the string draw (`render_bridge::native_hud::strings`)
+/// as overlay runs over the glyph pages of its font: the batch's glyph
+/// material (the glyphs' coverage times each run's colour) with its
+/// blend, each run's colour the quads' packed colour.
+pub fn build_string(run: &StringRun, size: [u32; 2], clip: ClipRect) -> Option<Overlay> {
+    let material = OverlayMaterial { blend: run.blend, ..OverlayMaterial::text(run.font) };
+    let mut overlay = Overlay::new(size);
+    for (colour, glyphs) in runs(&run.quads, run.origin) {
+        overlay.push_text_run(material, clip, colour, &glyphs).ok()?;
+    }
+    Some(overlay)
+}
+
+/// A proven string laid out in Rust, all of it or none: its runs placed
+/// as one pass over the host's glyph pages, on the bound target inside
+/// the area a draw recorded now would write (one rectangle), under the
+/// fit the guest's draws carry here. A target or clip that does not read
+/// leaves the string to the guest.
+pub fn draw_string<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    run: &StringRun,
+) -> bool {
+    let placed = device.lock().ok().and_then(|d| {
+        let m = crate::native_lights_glue::DeviceMemory(&mut *mem);
+        let (w, h) = d.target_extent(&m).ok()?;
+        let (clip, rects) = d.clip_area(&m).ok()??;
+        rects.is_empty().then_some(([w, h], ClipRect { x: clip.x, y: clip.y, width: clip.width, height: clip.height }))
+    });
+    let Some((size, clip)) = placed else { return false };
+    let Some(overlay) = build_string(run, size, clip) else { return false };
+    let slot = if render_bridge::native_hud::kept::in_hud() { frame_scene::ViewSlot::Hud } else { frame_scene::ViewSlot::Ui };
+    crate::hud_overlay::place_text(device, mem, overlay, slot)
 }
 
 /// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),
@@ -574,7 +636,8 @@ mod text_tests {
 
     #[test]
     fn a_strings_quads_are_runs_in_the_guests_order_one_per_change_of_colour() {
-        let runs = runs(&text());
+        let t = text();
+        let runs = runs(&t.quads, t.origin);
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].0, [0.0, 0.0, 0.0, 128.0 / 255.0]);
         assert_eq!(runs[0].1, vec![OverlayGlyph { index: 1, rect: [111.0, 20.0, 119.0, 30.0] }]);
@@ -597,6 +660,46 @@ mod text_tests {
             assert_eq!((item.alpha_kill, item.glyph_cache), (1, 0));
         }
         assert_eq!(overlay.glyphs_of(&overlay.items[1]).len(), 3);
+    }
+
+    /// A plain string's runs are its glyph quads where the guest's draws
+    /// put them: each glyph's place in the frame, its glyph in its font's
+    /// pages (the texels the guest's quad samples) and its colour, in the
+    /// guest's order, shadow then glyph.
+    #[test]
+    fn a_plain_strings_runs_are_its_glyph_quads_place_glyph_and_colour() {
+        let t = text();
+        let run = StringRun { font: 8, quads: t.quads.clone(), origin: t.origin, blend: frame_scene::OverlayBlend::ALPHA };
+        let clip = ClipRect { x: 0, y: 0, width: 640, height: 480 };
+        let overlay = build_string(&run, [640, 480], clip).unwrap();
+        let mut drawn = Vec::new();
+        for item in &overlay.items {
+            assert_eq!(item.kind, OverlayKind::TextRun);
+            assert_eq!(item.material, OverlayMaterial::text(8));
+            let [r, g, b, a] = item.color.map(|v| (v * 255.0).round() as u32);
+            for glyph in overlay.glyphs_of(item) {
+                drawn.push((glyph.index, glyph.rect, a << 24 | r << 16 | g << 8 | b));
+            }
+        }
+        let expected: Vec<_> = t.quads.iter().map(|q| {
+            let [x0, y0, x1, y1] = q.rect;
+            (q.index, [x0 + 100.0, y0, x1 + 100.0, y1], q.colour)
+        }).collect();
+        assert_eq!(drawn, expected);
+        let blended = StringRun { blend: frame_scene::OverlayBlend::Off, ..run };
+        assert_eq!(build_string(&blended, [640, 480], clip).unwrap().items[0].material.blend, frame_scene::OverlayBlend::Off);
+    }
+
+    /// A refused prediction is counted by its cause; the map loading is
+    /// no refusal.
+    #[test]
+    fn a_refused_prediction_is_counted_by_its_cause() {
+        let count = |name: &str| refusal_counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n);
+        let before = count("native_ui_overlay_hud_rust_refused_texture");
+        refused(&Unpredicted::Refused(HudRefusal::Texture { stage: 0 }));
+        assert_eq!(count("native_ui_overlay_hud_rust_refused_texture"), before + 1);
+        assert_eq!(Unpredicted::Inputs.cause(), Some("inputs"));
+        assert_eq!(Unpredicted::Loading.cause(), None);
     }
 
     #[test]
