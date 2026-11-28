@@ -1053,8 +1053,9 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog_quad::NativeFogQuad)
             .map_err(|e| anyhow::anyhow!("native fog quad: {e}"))?;
-        // The second fog's fans 0x00025dc0: a named panic when one would
-        // draw, until the native renderer has their stage.
+        // The second fog's fans 0x00025dc0: the composite drawn on the
+        // device, its setup cut (native_fog_fans_glue, installed with the
+        // device); the layers a named panic.
         features
             .add(&render_bridge::native_fog_fans::NativeFogFans)
             .map_err(|e| anyhow::anyhow!("native fog fans: {e}"))?;

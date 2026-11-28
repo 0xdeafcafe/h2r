@@ -1162,6 +1162,10 @@ points! { ALL;
     /// `0x00026880` and `0x00026e50` (`cl` set) or `0x000276d0` (`dl`).
     /// `ret`.
     FOG_FANS @ 0x0002_5dc0: [opaque]; "docs/graphics/retire-d3d-fog-fans.md";
+    /// The second fog's composite setup (`dl` alone), which the fan
+    /// `0x00034420` calls through EDI (return `0x0003452e`): one stack
+    /// argument, `ret 4`, AL whether the fan draws.
+    FOG_COMPOSITE_SETUP @ 0x0002_76d0: [opaque]; "docs/graphics/retire-d3d-fog-fans.md";
     /// The planar fog quad's setup for view modes 2 and 3, which the fan
     /// `0x00034420` calls through EDI (return `0x0003452e`): one stack
     /// argument, `ret 4`, AL whether the fan draws.

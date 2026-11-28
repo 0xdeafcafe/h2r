@@ -581,7 +581,21 @@ impl QuadDrawer {
     ) -> Result<Option<QuadCommand>, &'static str> {
         let texture = dest.texture();
         let surface = PostSurface { view: dest, guest_size: (texture.width(), texture.height()) };
-        self.prepare((device, queue, uploads), program, bytemuck::bytes_of(frame), Some(strips), (surface, format, blend.into()), stages)
+        self.grid_raster((device, queue, uploads), program, frame, strips, (surface, format, blend.into()), stages)
+    }
+
+    /// [`Self::grid`] into `dest` drawn under `raster` (a blend constant,
+    /// a blend [`Blend`] cannot name), `dest`'s guest size its own.
+    pub fn grid_raster(
+        &mut self,
+        gpu: (&wgpu::Device, &wgpu::Queue, &gfx::ring::SubmissionUploads),
+        program: &Program,
+        frame: &GridFrame,
+        strips: &[Vec<StripVertex>],
+        dest: (PostSurface<'_>, wgpu::TextureFormat, PostRaster),
+        stages: [Option<&wgpu::TextureView>; 4],
+    ) -> Result<Option<QuadCommand>, &'static str> {
+        self.prepare(gpu, program, bytemuck::bytes_of(frame), Some(strips), dest, stages)
     }
 
     pub(crate) fn prepare(

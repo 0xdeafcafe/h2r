@@ -224,6 +224,16 @@ pub fn role(header: u32, parent: u32) -> Option<frame_types::TargetRole> {
     entry(header, TARGET_SURFACE).map(frame_types::TargetRole::Game)
 }
 
+/// The surface header of `role`, [`role`]'s inverse for a table entry's
+/// surface: the frame graph's surface for that role is the one the
+/// device holds for the header. `None` for any other role.
+pub fn surface(role: frame_types::TargetRole) -> Option<u32> {
+    match role {
+        frame_types::TargetRole::Game(n) if u32::from(n) < TARGET_COUNT => Some(TARGETS + TARGET_STRIDE * u32::from(n) + TARGET_SURFACE),
+        _ => None,
+    }
+}
+
 /// The target select's cut: the bind through `host` and the cache words,
 /// `eax` 1. `Err` names the call it could not make (nothing written).
 pub fn cut_select(mem: &mut dyn GuestMemory, host: &dyn Host, colour: u32, depth: u32, flag: u8) -> Result<Bind, &'static str> {
@@ -428,6 +438,11 @@ mod tests {
         assert_eq!(role(surface(TARGET_COUNT), 0), None, "past the table");
         assert_eq!(role(TARGETS, 0), None);
         assert_eq!(role(0x0123_4560, 0x0123_4000), None, "another texture's level");
+        for n in [0u8, 3, 0x13, 0x1b] {
+            assert_eq!(super::surface(TargetRole::Game(n)).map(|h| role(h, 0)), Some(Some(TargetRole::Game(n))));
+        }
+        assert_eq!(super::surface(TargetRole::Game(TARGET_COUNT as u8)), None);
+        assert_eq!(super::surface(TargetRole::GameLevel(3)), None);
     }
 
     #[derive(Default)]
