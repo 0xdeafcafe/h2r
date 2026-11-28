@@ -1,7 +1,7 @@
 //! The Rust particle and contrail materials a cut setup's draws take
 //! (docs/graphics/retire-d3d-r2.md, "R2's materials"): made from the
-//! setup's inputs (`render_bridge::effect_materials`) and the tags, as the
-//! device's supplied draw state. The particle material needs the map's
+//! setup's inputs (`render_bridge::effect_materials`) and the tags, held
+//! for the setup's draws. The particle material needs the map's
 //! shader library, read once a map.
 
 use std::collections::HashMap;
@@ -37,12 +37,21 @@ fn particle_formats(mem: &dyn GuestMemory, inputs: &particle_material::Inputs, m
     Ok(particle_material::vertex_formats(&semantics, &elements))
 }
 
-/// The material of the setup of `kind` running now as the device's
-/// supplied draw takes it, for [`Host::material_cut`]: its material,
-/// textures and program made, or the cause it cannot be (which panics).
+/// The cut setup's material: the material, its resolved textures and
+/// program, and the vertex array formats its declaration gives the draws
+/// (the particle setup's; `None` for a contrail's).
+pub(crate) struct Held {
+    pub material: Material,
+    pub resolved: Resolved,
+    pub vertex_format: Option<[u32; 16]>,
+}
+
+/// The material of the setup of `kind` running now, for
+/// [`Host::material_cut`]: its material, textures and program made, or
+/// the cause it cannot be (which panics).
 ///
 /// [`Host::material_cut`]: render_bridge::native_particles::Host::material_cut
-pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedState, &'static str> {
+pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<Held, &'static str> {
     let mut formats = None;
     let material = match kind {
         Kind::Particle => {
@@ -61,16 +70,14 @@ pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedStat
         }
     };
     let (material, resolved) = resolved(mem, material)?;
-    let mut s = supplied(&material, &resolved)?;
-    s.vertex_format = formats;
-    Ok(s)
+    check(&material, &resolved)?;
+    Ok(Held { material, resolved, vertex_format: formats })
 }
 
-/// `m` and its textures and program as a supplied draw's state. Not
-/// made: a combiner word the draw drives (`combiner_driven`), which the
-/// material does not hold, and a program whose length is not its
+/// Not drawn: a combiner word the draw drives (`combiner_driven`), which
+/// the material does not hold, and a program whose length is not its
 /// header's (`vertex_program_size`).
-pub(super) fn supplied(m: &Material, r: &Resolved) -> Result<d3d::SuppliedState, &'static str> {
+fn check(m: &Material, r: &Resolved) -> Result<(), &'static str> {
     if m.combiner_driven != 0 {
         return Err("combiner_driven");
     }
@@ -79,28 +86,20 @@ pub(super) fn supplied(m: &Material, r: &Resolved) -> Result<d3d::SuppliedState,
     if count == 0 || code.len() != 16 * count {
         return Err("vertex_program_size");
     }
-    Ok(d3d::SuppliedState {
-        render: m.states.iter().map(|&(slot, value)| (u32::from(slot), value)).collect(),
-        stages: m.stages.iter().map(|&(stage, slot, value)| (u32::from(stage), u32::from(slot), value)).collect(),
-        pixel_shader: m.combiner,
-        constants: m.constants.iter().map(|&(slot, value)| (slot, value, 0xf)).collect(),
-        microcode: code.chunks_exact(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect(),
-        textures: r.textures.map(|t| t.map(|header| header.unwrap_or(0))),
-        vertex_format: None,
-    })
+    Ok(())
 }
 
-/// The supplied state of the cut setup of each kind, for its draws.
-static HELD: Mutex<[Option<Arc<d3d::SuppliedState>>; 2]> = Mutex::new([None, None]);
+/// The material of the cut setup of each kind, for its draws.
+static HELD: Mutex<[Option<Arc<Held>>; 2]> = Mutex::new([None, None]);
 
-/// Holds `s` for the draws of the cut setup of `kind`.
-pub(super) fn hold(kind: Kind, s: d3d::SuppliedState) {
-    HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize] = Some(Arc::new(s));
+/// Holds `h` for the draws of the cut setup of `kind`.
+pub(super) fn hold(kind: Kind, h: Held) {
+    HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize] = Some(Arc::new(h));
 }
 
-/// The state a draw of `kind` draws from: the material its setup's cut
+/// The material a draw of `kind` draws from: the one its setup's cut
 /// held, `None` before the first setup of `kind`.
-pub(super) fn held(kind: Kind) -> Option<Arc<d3d::SuppliedState>> {
+pub(super) fn held(kind: Kind) -> Option<Arc<Held>> {
     HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize].clone()
 }
 

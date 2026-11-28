@@ -9,7 +9,6 @@ use gfx::world_lines::ImageSamples;
 pub use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
 use render_bridge::scene_step::{self, PresentObserver, PresentPayload};
 
-use crate::d3d_glue::DeviceSnapshot;
 use crate::editor_glue;
 
 /// A host producer of world-space geometry for the window overlay.
@@ -26,7 +25,8 @@ pub trait WorldLineSource: Send + Sync {
 struct CaptureLines {
     editor: Option<EditorLink>,
     sources: Vec<Arc<dyn WorldLineSource>>,
-    device: Arc<dyn DeviceSnapshot>,
+    /// The display's horizontal projection widening over the guest's.
+    horizontal_factor: Arc<dyn Fn() -> f32 + Send + Sync>,
 }
 
 fn capture_samples(
@@ -55,16 +55,17 @@ impl PresentObserver for CaptureLines {
     }
 
     fn horizontal_factor(&self) -> f32 {
-        self.device.mark_projection_factor()
+        (self.horizontal_factor)()
     }
 }
 
-fn take_mark_image() -> Option<d3d::present_camera::Image> {
+/// The marks image the frame step attaches to the present it seals.
+pub fn take_mark_image() -> Option<gfx::present_camera::Image> {
     let image = scene_step::take_present_image()?;
-    Some(d3d::present_camera::Image {
+    Some(gfx::present_camera::Image {
         views: image.views.map(|view| {
             let view = view?;
-            Some(d3d::present_camera::View {
+            Some(gfx::present_camera::View {
                 camera: view.camera,
                 horizontal_factor: view.horizontal_factor,
             })
@@ -76,14 +77,9 @@ fn take_mark_image() -> Option<d3d::present_camera::Image> {
 pub fn present_observer(
     editor: Option<EditorLink>,
     sources: Vec<Arc<dyn WorldLineSource>>,
-    device: Arc<dyn DeviceSnapshot>,
+    horizontal_factor: Arc<dyn Fn() -> f32 + Send + Sync>,
 ) -> Arc<dyn PresentObserver> {
-    device.set_mark_image_source(take_mark_image);
-    Arc::new(CaptureLines {
-        editor,
-        sources,
-        device,
-    })
+    Arc::new(CaptureLines { editor, sources, horizontal_factor })
 }
 
 /// `render.marks` (docs/runtime/agent-api.md, "render.marks"): where the

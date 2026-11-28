@@ -2,7 +2,7 @@
 //! "Movies"): the Bink HLE's native draw hands its quad and decoded picture
 //! here; `render_bridge::native_movie` makes the overlay and
 //! `hud_overlay::place_movie` places it at the guest's point in the frame,
-//! the picture uploaded as the pass records. A draw that is refused shows
+//! the picture uploaded as the stage records. A draw that is refused shows
 //! nothing and is counted by its reason (`native_ui_movie_refused_*`).
 
 use std::sync::Arc;
@@ -10,9 +10,7 @@ use std::sync::Arc;
 use bink_hle::{MovieDisplay, MovieDraw};
 use render_bridge::native_movie::{Movie, MovieRefusal};
 
-struct Display<B: d3d::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
-}
+struct Display;
 
 struct Read<'a>(&'a runtime::Guest);
 
@@ -22,7 +20,7 @@ impl native_render::camera::GuestRead for Read<'_> {
     }
 }
 
-impl<B: d3d::Backend + Send + 'static> MovieDisplay for Display<B> {
+impl MovieDisplay for Display {
     fn show(&self, mem: &mut runtime::Guest, draw: &MovieDraw) -> bool {
         let p = &draw.picture;
         let movie = Movie { movie: p.movie, frame: p.frame, size: [p.width, p.height] };
@@ -40,7 +38,7 @@ impl<B: d3d::Backend + Send + 'static> MovieDisplay for Display<B> {
             height: p.height,
             bgra: Arc::clone(&p.bgra),
         };
-        if crate::hud_overlay::place_movie(&self.device, mem, overlay, image) {
+        if crate::hud_overlay::place_movie(mem, overlay, image) {
             return true;
         }
         MovieRefusal::Pass.counter().count();
@@ -48,11 +46,7 @@ impl<B: d3d::Backend + Send + 'static> MovieDisplay for Display<B> {
     }
 }
 
-/// The device's movie display, with the native renderer on.
-pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    let switches = hooks::Switches::from_env().unwrap_or_default();
-    if !hooks::switches::native_render_on(&switches) {
-        return;
-    }
-    bink_hle::set_display(Some(Arc::new(Display { device: device.clone() })));
+/// The native renderer's movie display.
+pub fn install() {
+    bink_hle::set_display(Some(Arc::new(Display)));
 }
