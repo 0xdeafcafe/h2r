@@ -28,7 +28,7 @@ use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The pose matrix's sign mask (16 bytes).
 pub const SIGNS: u32 = 0x0045_3750;
@@ -55,17 +55,6 @@ const RECORD_BYTES: u32 = 0x20;
 const DEAD: u32 = 16;
 /// The largest node count the walk takes; larger ones run the loop.
 pub const MAX_NODES: u32 = 1024;
-
-static ENABLED: AtomicBool = AtomicBool::new(true);
-
-/// `impl.sim.native.anim.skeleton`, set by the installer. On by default.
-pub fn set_enabled(on: bool) {
-    ENABLED.store(on, Ordering::Relaxed);
-}
-
-pub fn enabled() -> bool {
-    ENABLED.load(Ordering::Relaxed)
-}
 
 /// Why a walk was left to the loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -327,11 +316,6 @@ pub fn walk(c: &mut CpuAbi, g: &mut Guest) -> Result<bool, GuestFault> {
     let posed = (1..p.count as usize).filter(|&i| !p.kept(i)).count();
     POSED.fetch_add(posed as u64, Ordering::Relaxed);
     Ok(true)
-}
-
-/// [`walk`] when the switch is on.
-pub fn run(c: &mut CpuAbi, g: &mut Guest) -> Result<bool, GuestFault> {
-    if enabled() { walk(c, g) } else { Ok(false) }
 }
 
 #[cfg(test)]

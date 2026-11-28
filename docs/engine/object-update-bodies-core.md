@@ -393,7 +393,7 @@ matrix `1421f0`, the composition `142a60` and the root transform
 `bdc40` run inline through `sim_native`, so they are no callouts: the
 harness steps them on the lifted side as part of the tree (`INLINED`).
 The skeleton walk from node 1 is phase 1b's: `sim_anim::build_matrices`
-through `engine::sim_anim::skeleton` (`impl.sim.native.anim.skeleton`),
+through `engine::sim_anim::skeleton`,
 with the port's per-node loop as the fallback when it declines
 ([skeleton-walk.md](skeleton-walk.md)). The frame and the callouts here
 are the same either way.

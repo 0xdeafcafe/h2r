@@ -1,15 +1,14 @@
 # Animation channel manager and graph lookup
 
-Status: Six entries run as arms that answer from Rust once proven, under `impl.sim.native.anim.manager`. Cumulative timing awaits verification.
+Status: Six entries run as arms that answer from Rust once proven, always installed. Cumulative timing awaits verification.
 
 The channel manager selects, advances and blends the channels on a guest
 object. Its entry points and graph helpers are registered by
 `crates/rewrites/engine/src/sim_anim/manager.rs`. Each body declares its
 entry, instruction range and return selectors. The animation switch owns
 these bodies, including graph resolution. The six phase 1d entries
-also have their own switch, `impl.sim.native.anim.manager`, which
-installs them without the rest of the group. See
-[switches.md](../runtime/switches.md).
+install with or without the rest of the group, with no switch of their
+own. See [switches.md](../runtime/switches.md).
 
 ## Calls and fallback
 
@@ -25,8 +24,8 @@ dispatcher, and it compares the transfer before the callee can change the
 frame. Otherwise `manager::run` runs the segment and commits it, and the
 guest does not run. A declined segment goes to the guest. One difference
 returns that entry to the guest for the rest of the process. The audit
-slots restart at map load, checkpoint revert and restore. With
-`impl.sim.native.anim.manager` off, the guest answers every segment.
+slots restart at map load, checkpoint revert and restore. The
+differential tests call the lifted entries directly as the reference.
 
 `sim_anim::manager_channels` computes the loop-frame interval, playback
 rate class and channel mix on transient values gathered from the current

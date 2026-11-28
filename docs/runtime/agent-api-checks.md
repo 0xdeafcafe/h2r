@@ -41,7 +41,7 @@ after a call. For each observed function, `matched` and `differed` count
 completed comparisons. `declined` counts segments the Rust arm could
 not predict. `interrupted` counts predictions for which the guest exited
 before a comparison boundary. `answered` counts segments the Rust body
-answered without the guest under `impl.sim.native.anim.manager`. The first difference for each function is
+answered without the guest. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
 (`what`), and both values (`plan` and `guest`). An entry with `first` set
 to `null` has no recorded difference. Compare counts before and after

@@ -95,7 +95,6 @@ impl Feature for SimNative {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         sim::set_simd(simd_on(b.switches()));
-        engine::sim_anim::skeleton::set_enabled(skeleton_on(b.switches()));
         let anim = anim_on(b.switches());
         engine::sim_anim::markers::set_enabled(anim);
         engine::sim_anim::palette::set_enabled(anim);
@@ -143,11 +142,12 @@ impl Feature for SimNative {
                     self.missing_hs_entries.join(", "));
             }
         }
-        let answer = anim_manager_on(b.switches());
+        // Phase 1d's manager and graph entries always install: each answers
+        // from Rust once proven (docs/engine/animation-manager.md).
         if anim {
-            install_anim(b, &self.exported_anim, answer);
-        } else if answer {
-            install_anim_bodies(b, &manager_arms(&self.exported_anim), true);
+            install_anim(b, &self.exported_anim);
+        } else {
+            install_anim_bodies(b, &manager_arms(&self.exported_anim));
             observe_anim_invalidate(b);
         }
         if collision {
@@ -166,20 +166,13 @@ impl Feature for SimNative {
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.
-        let anim_state = anim || answer;
-        b.snapshot(if anim_state || collision {
-            SnapshotPolicy::section(Vec::new, move |_, _| {
-                if anim_state {
-                    engine::sim_anim::invalidate();
-                }
-                if collision {
-                    engine::sim_collision::invalidate();
-                }
-                Ok(())
-            })
-        } else {
-            SnapshotPolicy::Stateless
-        });
+        b.snapshot(SnapshotPolicy::section(Vec::new, move |_, _| {
+            engine::sim_anim::invalidate();
+            if collision {
+                engine::sim_collision::invalidate();
+            }
+            Ok(())
+        }));
         Ok(())
     }
 }
@@ -209,33 +202,9 @@ pub(crate) fn anim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(ANIM, false)
 }
 
-/// `impl.sim.native.anim.manager`: phase 1d's six manager and graph
-/// entries (`manager::arm::ENTRIES`) answer from the Rust body once each is
-/// proven, with the guest answering and compared on one segment in
-/// `manager::arm::AUDIT_EVERY` (docs/engine/animation-manager.md). It
-/// installs those entries on its own when `impl.sim.native.anim` is off;
-/// off, under the animation group, they only compare. Unset, it follows
-/// `impl.sim.native.anim`.
-pub(crate) const ANIM_MANAGER: &str = "sim.native.anim.manager";
-
-pub(crate) fn anim_manager_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(ANIM_MANAGER, true)
-}
-
 /// The phase 1d rows of `exports`.
 fn manager_arms(exports: &[AnimBody]) -> Vec<AnimBody> {
     exports.iter().copied().filter(|b| matches!(b.run, AnimRun::ManagerArm)).collect()
-}
-
-/// `impl.sim.native.anim.skeleton`: the skeleton walk of `bd090` as one
-/// Rust call, phase 1b (docs/engine/skeleton-walk.md). On by default. It
-/// runs wherever `bd090` runs natively: the walk table's body
-/// (`impl.sim.native.objects.walk`), the `impl.sim.native.objects` body or
-/// the `impl.sim.native_pose_matrix` port. Unset, it follows
-/// `impl.sim.native.anim`, so `-impl.sim.native.anim` and
-/// `-impl.sim.native` turn it off too.
-fn skeleton_on(switches: &hooks::Switches) -> bool {
-    switches.implementation("sim.native.anim.skeleton", true)
 }
 
 /// Points after which guest memory no longer matches the clip store: map
@@ -301,15 +270,14 @@ pub(crate) fn owns_anim(switches: &hooks::Switches, addr: u32) -> bool {
         || ANIM_BODIES.iter().any(|body| body.point.base == addr))
 }
 
-fn install_anim(b: &mut Builder, exports: &[AnimBody], answer: bool) {
-    install_anim_bodies(b, exports, answer);
+fn install_anim(b: &mut Builder, exports: &[AnimBody]) {
+    install_anim_bodies(b, exports);
     install_anim_points(b);
     observe_anim_invalidate(b);
 }
 
-/// The pose bodies and manager rows in `exports`. `answer` lets the phase
-/// 1d rows answer ([`ANIM_MANAGER`]).
-fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody], answer: bool) {
+/// The pose bodies and manager rows in `exports`.
+fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody]) {
     let fusion = Arc::new(manager_fusion::Fusion::new(exports));
     for &body in exports {
         let run_fusion = Arc::clone(&fusion);
@@ -318,7 +286,7 @@ fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody], answer: bool) {
                 let transfer = match body.run {
                     AnimRun::Pose(run) => run(cpu, &mut ctx.memory(), pc)?,
                     AnimRun::ManagerArm => {
-                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base, answer);
+                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
                     }
                     AnimRun::Manager => {
                         let available = run_fusion.available(ctx.runtime());
@@ -1051,17 +1019,6 @@ mod tests {
             let trap = Bail::Trap as usize;
             assert!(after.entries[entry as usize].bails[trap] > before.entries[entry as usize].bails[trap]);
         }
-    }
-
-    #[test]
-    fn the_skeleton_walk_is_on_by_default_and_follows_the_anim_group() {
-        let on = |text: &str| skeleton_on(&Switches::parse(text).unwrap());
-        assert!(on(""));
-        assert!(!on("-impl.sim.native.anim.skeleton"));
-        assert!(!on("-impl.sim.native.anim"));
-        assert!(!on("-impl.sim.native"));
-        assert!(on("impl.sim.native.anim"));
-        assert!(on("-impl.sim.native.anim,impl.sim.native.anim.skeleton"));
     }
 
     #[test]

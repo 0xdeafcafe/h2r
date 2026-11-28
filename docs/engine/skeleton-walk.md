@@ -7,7 +7,7 @@ answers and one call in 64 is still compared.
 Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 `compose`), `crates/rewrites/sim-anim/src/graph_walk.rs`
 (`graph_matrices`, `graph_order`),
-`crates/rewrites/engine/src/sim_anim/skeleton.rs` (`run`, `walk`),
+`crates/rewrites/engine/src/sim_anim/skeleton.rs` (`walk`),
 `crates/rewrites/engine/src/sim_anim/graph_walk.rs` (`plan`, `run`,
 `enter`, `audit`, `compare`, `reference`). Tests:
 `crates/rewrites/sim-anim/src/skeleton_tests.rs`,
@@ -17,8 +17,9 @@ Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 `crates/rewrites/engine/tests/sim_physics_differential.rs`
 (`object_node_matrices`),
 `crates/rewrites/engine/tests/sim_anim_graph_differential.rs`.
-Switches: `impl.sim.native.anim.skeleton` (on) for `bd090`'s walk,
-`impl.sim.native.anim` (off) for the graph walk's arm, both listed in
+`bd090`'s walk always runs in Rust, with no switch; a walk it declines
+is a counted `Decline` and runs the port's per-node loop.
+`impl.sim.native.anim` (off) switches the graph walk's arm, listed in
 [switches.md](../runtime/switches.md).
 
 Phase 1b of the [simulation rewrite](sim-rewrite.md). `bd090` turns an
@@ -36,7 +37,7 @@ the same, so the guest cannot tell which ran.
 in the walk table, on by default, or under `impl.sim.native.objects`; or
 under `impl.sim.native_pose_matrix`). At the
 loop's entry (`bd50c`, node count above 1, `esi` 1) it calls
-`engine::sim_anim::skeleton::run`, and runs its own per-node loop `nodes`
+`engine::sim_anim::skeleton::walk`, and runs its own per-node loop `nodes`
 only when that returns `false`.
 
 1. **Gather** (`plan`). From `bd090`'s frame: the skeleton definition
@@ -275,10 +276,9 @@ that is not mapped declines a call the guest would complete.
 
 ## Not verified
 
-- Run parity: the sim-budget A/B with `-impl.sim.native.anim.skeleton`
-  against on, at the defaults (the walk table runs `bd090`), identical
-  `state_hashes_v1` and an
-  empty `h2 sim diff`; the cross-architecture arm.
+- Run parity: `h2 sim diff` against the lifted build at the defaults
+  (the walk table runs `bd090`), identical `state_hashes_v1`; the
+  cross-architecture arm.
 - The decline rate on real skeletons (`stats()`), and the time saved per
   tick on Waterworks.
 - The graph walk's arm in a run: `anim.graph_walk` with
