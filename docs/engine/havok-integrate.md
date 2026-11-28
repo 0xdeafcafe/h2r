@@ -1,8 +1,8 @@
 # The Havok integrate phase: deactivation and the island integrate
 
-Status: Partly built. The integrate phase `0x0030fef0`, the deactivation test `0x00316b30` and the island integrate `0x00316a20` run as take-over arms on the paths below; the paths they decline, the runs and lanes across islands and the worker solves are not built.
+Status: Partly built. The integrate phase `0x0030fef0`, the deactivation test `0x00316b30` and the island integrate `0x00316a20` run as answering arms on the paths below; the paths they decline, the runs and lanes across islands and the worker solves are not built.
 Code: `crates/rewrites/sim-havok/src/{integrate_phase,deactivation,island_integrate}.rs` (the models), `crates/rewrites/engine/src/sim_physics/{integrate_phase,deactivation,island_integrate,answer}.rs` (the arms' captures), `crates/rewrites/engine/src/sim_physics/parity.rs` (the arms). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` and the models' unit tests.
-Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
+Always installed: the physics entries have no switch.
 
 Phase 5's integrate phase, entry by entry: what each reads and writes,
 the path its Rust model covers and what it declines. The models are
@@ -71,7 +71,7 @@ journal, the deactivation test and the island integrate of every island
 in the phase's order, so each island reads what the one before it left,
 the solver buffer included. The engine's `sim_physics/integrate_phase.rs`
 captures the journal and the registers above, with edx `0xffffffff`, and
-`parity`'s `physics.integrate` arm answers with it once proven. The out
+`parity`'s `physics.integrate` arm answers with it from the first call. The out
 byte of each test lands in the phase's own argument slot, dead at the
 return, and is not stored. A call declines, counted by reason
 (`integrate_phase::fallbacks`, `havok.islands`'s `phase`):
@@ -86,10 +86,10 @@ return, and is not stored. A call declines, counted by reason
 | `island` | the test or the integrate declines an island; the guest's own call to it counts the reason in that arm |
 | `float` | an unmasked exception, a non-empty x87 stack, or a non-finite float the x87 code loads |
 | `monitor` | the monitor stream is on |
-| `unobserved` | an audited return could not be observed |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
-When the guest answers, the lifted phase runs and reaches the test and the
-integrate through the dispatcher, so their arms answer or audit inside it.
+When the phase declines, the lifted phase runs and reaches the test and the
+integrate through the dispatcher, so their arms answer inside it.
 
 ## The deactivation test
 
@@ -112,7 +112,7 @@ is dead at the return. **E**
 
 **The port.** `sim_havok::deactivation::test` on a journal; the engine's
 `sim_physics/deactivation.rs` captures it with eax, ebx, ebp, esi, edi
-and esp, and `physics.island.deactivation` answers with it once proven.
+and esp, and `physics.island.deactivation` answers with it from the first call.
 Declines (`deactivation::fallbacks`, `havok.islands`'s `deactivation`):
 `memory`, `deactivator` (a slot target below does not list), `object`
 (Halo's check reaches `0x000e4050`), `float`, `monitor`, `unobserved`.
@@ -190,7 +190,7 @@ a write journal: the solve stage of `island_solve`, or `motion_solve`'s
 `accumulate` and `export`. The engine's
 `sim_physics/island_integrate.rs` captures the journal, the callee-saved
 registers, ecx and esp, and `parity`'s `physics.island.integrate` arm
-answers with it once proven (sim-rewrite-havok.md §9.5). A call declines
+answers with it from the first call (sim-rewrite-havok.md §9.5). A call declines
 to the guest, counted by reason (`island_integrate::fallbacks`, read with
 `havok.islands`), when the island holds actions (`action`), a motion's
 unconstrained slots are not one of the four pairs above (`motion`), the
@@ -198,8 +198,7 @@ x87 stack is not empty, rounding is not nearest or a float would trap
 or load non-finite (`float`), the solve declines (`solve`, its own
 reason counted by the solve when the guest calls it), the monitor stream
 is on (`monitor`), a word is unreadable or a store unwritable or two
-stores share physical bytes (`memory`), or an audited return cannot be
-observed (`unobserved`).
+stores share physical bytes (`memory`), or (`unobserved`, kept on the wire and 0).
 
 ## Not verified
 

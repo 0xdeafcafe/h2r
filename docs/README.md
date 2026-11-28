@@ -238,7 +238,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [README.md](engine/README.md): contracts for the engine functions rewritten in Rust (`crates/rewrites/engine`) and their differential tests, indexing [datum_new.md](engine/datum_new.md), [tag_get_checked.md](engine/tag_get_checked.md), [locale_string_id_find.md](engine/locale_string_id_find.md), [memory_pool.md](engine/memory_pool.md) and the HaloScript VM, [hs_vm.md](engine/hs_vm.md)
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
-- [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
+- [collision-queries.md](engine/collision-queries.md): the always-installed native collision world: entries, contract and bail reasons
 - [collision-queries-entries.md](engine/collision-queries-entries.md): the per-entry contracts of the collision queries (E, F, G, H, I, J) and the sphere pretest
 - [asset-store.md](engine/asset-store.md): the asset store (slices AS1 to AS5 built, not run on the disc): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; assets by hash; mods as packages of patches and new assets; `LevelId`
 - [asset-store-packages.md](engine/asset-store-packages.md): how packages lay over the asset store, conflicts, and level identity on the network and in films

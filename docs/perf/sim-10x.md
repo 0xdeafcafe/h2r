@@ -112,8 +112,8 @@ speed as off ([notes](notes/sim-10x.md)). The code says why (**Code**).
   access ([anim-sampling.md](../engine/anim-sampling.md)). It replaces
   `2798a0` and below: 3.5% of the Waterworks thread, less the first-person
   share a phantom roster does not have. About 0.19 ms on Lockout all-in.
-- **Collision takes two leaves.** `impl.sim.native.collision` installs
-  point-to-leaf and location only; the vector and instance traces run the
+- **Collision takes two leaves.** The always-installed collision world answers
+  point-to-leaf and location; the vector and instance traces run the
   original while their float environments are observed
   (`crates/rewrites/sim-bridge/src/sim_native.rs`, `COLLISION_OBSERVED`).
 

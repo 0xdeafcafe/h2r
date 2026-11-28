@@ -1,10 +1,10 @@
 # Collision queries
 
-The collision switch selects the native collision world. Point and location
+The native collision world is always installed (`sim_native::install_collision`). Point and location
 queries, MOPP boxes and J’s object-reference sphere pretest answer admitted
 calls in Rust. The vector walk, instance trace, cluster flood and object
-visit also have native exits. The vector walk's crossing exits answer only
-after a clean shadow run ([Crossing exits](#crossing-exits)). Their
+visit also have native exits. The vector walk's crossing exits answer every call
+from the first ([Crossing exits](#crossing-exits)). Their
 admission rules appear below.
 The Havok collector ray and the whole query keep the lifted return while
 Rust predicts the walk or result. The adapters live in
@@ -290,31 +290,26 @@ the instruction sequence of `0x1de630` and `0x1de6d0` and rebuilds:
 | x87 | PE on an inexact split; TOP and tags unchanged |
 | Stack | every frame's saved registers, locals, argument slots and return addresses, the wrapper's context, in guest order |
 
-The exit is shadow, then answer, per entry:
+The exit answers every crossing call from the first; the matcher path still
+runs lifted and is compared:
 
 ```mermaid
 flowchart LR
-  call[crossing call] --> gate{gate open?}
-  gate -- no --> lifted[lifted body] --> cmp[compare at return]
-  gate -- "yes, 63 of 64" --> native[write the exit]
-  gate -- "yes, 1 of 64" --> lifted
+  call[crossing call] --> native[write the exit, answered + 1]
+  call --> lifted[matcher path, lifted] --> cmp[compare at return]
   cmp -- clean --> count[exits_matched + 1]
-  cmp -- difference --> shut[fell_back: lifted from then on]
+  cmp -- difference --> diff[mismatched, first_mismatch]
 ```
 
 The comparison covers AL, R, D's context, all general registers and ESP,
 EFLAGS on the defined bits, MXCSR, XMM0–7, the x87 control word, status
 outside C0–C3, tags and occupied registers, and the stack from 0x40 below
-the deepest frame write to the argument slots. The gate opens after
-`CROSSING_CLEAN_RUN` (1,024) clean whole-exit comparisons with no
-difference on that entry. While open, one call in `CROSSING_SAMPLE_EVERY`
-(64) still runs lifted and is compared. Any difference, on a crossing exit
-or any other C or D comparison, closes the gate for the process.
+the deepest frame write to the argument slots.
 
 Contents of empty x87 registers and the condition codes are not replayed,
 as for the other C and D exits. D under the wrapper (return
 `0x1de6bd`) stays lifted, so C's comparison owns it. `collision.stats`
-reports the gate under `vector` and `context`.
+reports the counts under `vector` and `context`.
 
 ### Status-instruction census
 
