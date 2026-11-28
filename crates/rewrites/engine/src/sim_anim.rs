@@ -38,6 +38,7 @@
 //! `1dd1c0`").
 mod segments;
 pub use segments::{FIRST_PERSON_FILTER_SITES, UNIT_AIM_SITES, first_person_filters, unit_aim};
+pub mod facial;
 pub mod filter;
 pub mod graph_walk;
 pub mod manager;
