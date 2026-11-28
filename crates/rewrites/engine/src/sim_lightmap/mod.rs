@@ -19,9 +19,9 @@
 //! - [`sample`]: `0x000d1e10` and its callees in Rust over a [`View`];
 //! - [`object`]: `0x000d1850` and its callees but the sampler in Rust:
 //!   the directions `0x000d2a50`, the ray `0x0014af40` through entry J
-//!   (`0x001697c0`, natively) and its structure hit `0x0014ac60`, the
-//!   sky `0x000d1a30`. An object hit on a render model with lighting
-//!   blocks (`0x0014a8e0`) is not ported and stops by name;
+//!   (`0x001697c0`, natively), its structure hit `0x0014ac60` and its
+//!   hit on an object whose render model has lighting blocks
+//!   `0x0014a8e0`, the sky `0x000d1a30`;
 //! - [`answer`]: the `0x000d1e10` hook's body, for every caller;
 //! - [`record_call`]: the `0x0003ddd0` hook's body, for every caller
 //!   ([`crate::render::object_lighting::record`]);

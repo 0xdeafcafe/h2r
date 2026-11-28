@@ -1,7 +1,9 @@
-//! The lighting ray `0x0014af40` and its structure hit `0x0014ac60`, with
-//! the helpers under it: the inverse transform `0x00142700`, the part
-//! search `0x0016e1b0`, the triangle test `0x0011e800` and its axis pick
+//! The lighting ray `0x0014af40` and its structure hit `0x0014ac60` (its
+//! object hit `0x0014a8e0` is `model_hit`), with the helpers
+//! under it: the inverse transform `0x00142700`, the part search
+//! `0x0016e1b0`, the triangle test `0x0011e800` and its axis pick
 //! `0x00120850`.
+use super::model_hit::model_hit;
 use super::{Collide, NONE, Run, push_args, ret};
 use crate::sim_native::Memory;
 use runtime::GuestFault;
@@ -26,11 +28,12 @@ const FLAGS_STRUCTURE: u32 = 0x0480_0005;
 /// ECX `point`, EDI `start`; arguments the delta, the object J ignores,
 /// a word it does not read and the 0x38-byte hit. The start is copied from
 /// the point; with a lit structure the hit's first three words are -1 and
-/// entry J is asked. An object hit asks J again for the structure alone
-/// (an object of kind 6 whose definition `+0xc0` is not 2 does not); a
-/// structure hit is resolved by `0x0014ac60`. A miss to resolve restarts
-/// a step on (`[0x0045df0c]` times the delta) while the J record's `+0x58`
-/// bit 0 is set, three times at most. AL: resolved.
+/// entry J is asked. An object hit on a render model with lighting blocks
+/// is resolved by `0x0014a8e0`; another object hit asks J again for the
+/// structure alone (an object of kind 6 whose definition `+0xc0` is not 2
+/// does not); a structure hit is resolved by `0x0014ac60`. A miss to
+/// resolve restarts a step on (`[0x0045df0c]` times the delta) while the
+/// J record's `+0x58` bit 0 is set, three times at most. AL: resolved.
 pub fn ray<M: Memory, J: Collide<M>>(
     r: &mut Run<'_, M, J>,
     entry: u32,
@@ -70,16 +73,23 @@ pub fn ray<M: Memory, J: Collide<M>>(
             let passes = r.u8(body.wrapping_add(0xaa))? == 6 && r.u16(definition.wrapping_add(0xc0))? != 2;
             if !passes {
                 if r.model_lighting(other, hit.wrapping_add(0xc), hit.wrapping_add(0x10))? {
+                    // `0x0014b0f2`: the model's hit, its AL the result;
+                    // unresolved, the restart test at `0x0014b097`.
                     let render = r.u32(hit.wrapping_add(0xc))?;
-                    unimplemented!(
-                        "lightmap: a hit on object {other:#010x}, whose render model {render:#010x} has lighting blocks (0x0014a8e0)"
-                    );
+                    let at = entry.wrapping_sub(0x80);
+                    push_args(r, at, ret::MODEL_HIT, &[record, render, hit])?;
+                    let resolved = model_hit(r, at, record, render, hit)?;
+                    r.set_u8(result_at, resolved as u8)?;
+                    if resolved {
+                        return Ok(true);
+                    }
+                } else {
+                    let args = [FLAGS_STRUCTURE, start, delta, NONE, NONE, record];
+                    push_args(r, query, ret::STRUCTURE_QUERY, &args)?;
+                    flags = FLAGS_STRUCTURE;
+                    r.set_u32(flags_at, flags)?;
+                    structure = r.j.query(&mut *r.g, query)?;
                 }
-                let args = [FLAGS_STRUCTURE, start, delta, NONE, NONE, record];
-                push_args(r, query, ret::STRUCTURE_QUERY, &args)?;
-                flags = FLAGS_STRUCTURE;
-                r.set_u32(flags_at, flags)?;
-                structure = r.j.query(&mut *r.g, query)?;
             }
         }
         if structure {

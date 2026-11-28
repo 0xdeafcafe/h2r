@@ -8,24 +8,26 @@
 //! | `0x000d2a50` | [`Run::directions`] | one or five rays from the centre, the first that hits sampled by `0x000d1e10` ([`super::sample`]) |
 //! | `0x0014af40` | [`ray`] | a ray through entry J (`0x001697c0`) with up to three restarts, its hit resolved to a lightmap triangle |
 //! | `0x0014ac60` | [`ray`] (`structure_hit`) | a structure or instance hit: the triangle under the hit and its barycentric weights |
+//! | `0x0014a8e0` | `model_hit` | an object hit on a render model with lighting blocks: the section of the hit's region and permutation, the triangle under the hit in the node's space and its weights |
+//! | `0x001efb40`, `0x001efd80`, `0x0023ac30` | `model_hit` (`parts`, `collision_bsp`, `vertex`) | an object's model, collision model, permutations and nodes; a hit's collision BSP; a vertex's position and node by its block's kind |
 //! | `0x000d1a30` | [`sky`] | the sky's lights blended into a colour and a direction, the colour the fallback when the sky is occluded |
 //! | `0x000e5670`, `0x000bf9a0` | [`Run::unit_kind`], [`Run::model_lighting`] | a biped's byte `+0x3dc`; a model's render model with lighting blocks |
-//!
-//! Not ported: `0x0014a8e0`, the hit of an object whose render model has
-//! lighting blocks (`+0x74`, `+0x7c`): it is `unimplemented!`.
 //!
 //! The guest's frames sit at the addresses the guest's calls give them,
 //! below the caller's ESP: entry J reads and writes its start, delta and
 //! record through pointers, and `0x0014ac60` reads a flag and three
 //! vertices its frame may not have set, so they are guest memory here
-//! too. Everything else is Rust state. SSE operations run under the
-//! caller's MXCSR ([`Sse`]) and x87 ones under its control word ([`X87`]).
+//! too; so are `0x0014a8e0`'s locals, which the same caller's later
+//! `0x0014ac60` frame overlaps. Everything else is Rust state. SSE
+//! operations run under the caller's MXCSR ([`Sse`]) and x87 ones under
+//! its control word ([`X87`]).
 use super::store::Store;
 use super::view::{View, is_token};
 use crate::light_constants::{Error, Fpu, Sse, X87};
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault};
 
+mod model_hit;
 mod ray;
 mod sky;
 #[cfg(test)]
@@ -53,6 +55,7 @@ pub(crate) mod ret {
     pub const QUERY: u32 = 0x0014_afeb;
     pub const STRUCTURE_QUERY: u32 = 0x0014_b07d;
     pub const STRUCTURE_HIT: u32 = 0x0014_b08c;
+    pub const MODEL_HIT: u32 = 0x0014_b100;
     pub const SKY_QUERY: u32 = 0x000d_1c57;
 }
 
