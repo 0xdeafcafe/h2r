@@ -214,6 +214,8 @@ pub enum Status {
     /// the body for it, and each such item is a
     /// `scene_kept_<site><layer>_<kind>_<cause>` count
     /// (`native_layers::layer_return`). Its work here is only those items'.
+    /// The present is kept the same way: a published frame returns without
+    /// its body, a kept one (`publish_kept_<cause>`) runs it.
     Kept,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
@@ -407,6 +409,43 @@ pub const REGISTRY: &[Row] = &[
         name: "movie",
         entry: 0x0015_6040,
         status: Status::Partial,
+        slot: "outside",
+    },
+    // The frame's own calls around the producers above
+    // (docs/graphics/retire-d3d-display.md, "Frames outside a game view"): without
+    // these rows their entries were `unknown` inside the frame step and
+    // `outside_render` in the frame loops outside it.
+    //
+    // `render_views`' begin-frame setup and its loop over the views.
+    Row {
+        name: "views",
+        entry: 0x0002_b5d0,
+        status: Status::D3d,
+        slot: "opaque",
+    },
+    // The frame outside a game view's own setup (the target, the clear,
+    // the viewport through `0x0002c8a0`), from the frame step and the map
+    // load's two frame loops.
+    Row {
+        name: "outside_view",
+        entry: 0x0022_32a0,
+        status: Status::D3d,
+        slot: "outside",
+    },
+    // A frame loop outside the frame step: its view `0x0002ca00`.
+    Row {
+        name: "frame_loop",
+        entry: 0x0012_b6f0,
+        status: Status::D3d,
+        slot: "outside",
+    },
+    // The present: a published frame returns without its body
+    // (`render_frame::publish`), so its work here is only the kept
+    // frames' `Swap`.
+    Row {
+        name: "present",
+        entry: 0x0001_3f10,
+        status: Status::Kept,
         slot: "outside",
     },
 ];
@@ -1175,6 +1214,30 @@ pub fn install(b: &mut hooks::Builder) {
             "residual_census_loading",
             "residual_census_loading_end",
         ),
+        (
+            &points::RENDER_VIEWS,
+            "views",
+            "residual_census_views",
+            "residual_census_views_end",
+        ),
+        (
+            &points::RENDER_OUTSIDE_VIEW,
+            "outside_view",
+            "residual_census_outside_view",
+            "residual_census_outside_view_end",
+        ),
+        (
+            &points::RENDER_FRAME_LOOP,
+            "frame_loop",
+            "residual_census_frame_loop",
+            "residual_census_frame_loop_end",
+        ),
+        (
+            &points::RENDER_PRESENT,
+            "present",
+            "residual_census_present",
+            "residual_census_present_end",
+        ),
     ] {
         let Some(i) = row(name) else { continue };
         debug_assert_eq!(REGISTRY[i].entry, point.base, "{name}");
@@ -1438,6 +1501,50 @@ mod tests {
         assert_eq!(p[&Producer::Unknown].work.entries, 1, "the draw after the wait is the frame's");
     }
 
+    /// The frame's own calls have rows: inside the frame step the views'
+    /// setup and the frame outside a view are not `unknown`, a kept
+    /// frame's `Swap` is the present's, and a frame loop outside the
+    /// frame step files its view and present under their rows, not
+    /// `outside_render`.
+    #[test]
+    fn the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step() {
+        let producer = |name| Producer::Fixed(row(name).unwrap());
+        let mut c = open(true, 2);
+        c.frame_begin();
+        for name in ["views", "outside_view"] {
+            let p = producer(name);
+            c.enter(p);
+            c.call(&entry("D3DDevice_SetRenderTarget", 0x0002_c8f0, Tally::default()), None);
+            c.leave(|q| q == p);
+        }
+        let present = producer("present");
+        c.enter(present);
+        c.call(&swap(8), None);
+        c.leave(|q| q == present);
+        c.frame_end();
+        // A frame loop: not a render frame.
+        let (looped, outside) = (producer("frame_loop"), producer("outside_view"));
+        c.enter(looped);
+        c.call(&entry("D3DDevice_Clear", 0x0002_ca40, Tally::default()), None);
+        c.leave(|q| q == looped);
+        c.enter(outside);
+        c.call(&entry("D3DDevice_SetViewport", 0x0002_c900, Tally::default()), None);
+        c.leave(|q| q == outside);
+        c.enter(present);
+        let r = close(c, 9);
+        let p = r.producers.as_ref().unwrap();
+        assert_eq!(p[&producer("views")].work.binds, 1);
+        assert_eq!(p[&outside].work.entries, 2, "one in the frame step, one in the loop");
+        assert_eq!(p[&looped].work.clears, 1);
+        assert_eq!(p[&present].work.presents, 2, "the kept frame's Swap and the loop's");
+        assert!(!p.contains_key(&Producer::Unknown), "nothing inside the frame is unknown");
+        assert!(!p.contains_key(&Producer::OutsideRender), "nothing of the loop is outside the render");
+        assert_eq!(present.status(), Status::Kept);
+        for name in ["views", "outside_view", "frame_loop"] {
+            assert_eq!(producer(name).status(), Status::D3d, "{name}");
+        }
+    }
+
     #[test]
     fn without_observers_unattributed_holds_the_inline_draws() {
         let mut c = open(false, 1);
@@ -1528,6 +1635,8 @@ mod tests {
                 r.status,
                 if r.name == "object_shadows" {
                     Status::Native
+                } else if r.name == "present" {
+                    Status::Kept
                 } else if matches!(
                     r.name,
                     "object_setup"

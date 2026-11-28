@@ -20,6 +20,11 @@
 //! frame goes native. At the present, [`publish`] shows a frame whose
 //! every slot drew from the scene in place of the guest's present, and
 //! counts every frame that keeps it by name.
+//!
+//! Three frame loops outside `0x00223240` run a view, the frame wait and
+//! the present themselves: `0x0012b6f0` (`0x0012b784`) and the map load's
+//! two (`0x00163a28`, `0x00163adb`). Their present asks the same publish
+//! ([`loop_present`]); a kept one runs the guest's body.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -138,6 +143,22 @@ pub struct Stats {
     /// Frames shown from the scene, the guest's present skipped.
     pub published: AtomicU64,
     pub loading: AtomicU64,
+    /// A frame loop's presents ([`LOOP_RETURNS`]): the guest's run, and
+    /// those shown from the scene.
+    pub loop_presents: AtomicU64,
+    pub loop_published: AtomicU64,
+}
+
+/// Where the present returns in the three frame loops outside
+/// `0x00223240` (**Code**: `0x0012b784`, `0x00163a28`, `0x00163adb`, each
+/// after `push 0; push 0`).
+pub const LOOP_RETURNS: [u32; 3] = [0x0012_b789, 0x0016_3a2d, 0x0016_3ae0];
+
+/// Whether a call of the present with return address `ret` and first
+/// argument `readback` is a frame loop's: one of [`LOOP_RETURNS`], with no
+/// readback asked. The frame step's own call returns elsewhere.
+pub fn loop_frame(ret: u32, readback: u32) -> bool {
+    LOOP_RETURNS.contains(&ret) && readback == 0
 }
 
 /// The feature: the frame step at `RENDER_FRAME`, with the native
@@ -192,6 +213,10 @@ impl Feature for RenderFrame {
             let frame = Frame { esp: cpu.esp, ret: ctx.memory().u32(cpu.esp)? };
             run(&me, frame, Step::Start, cpu, ctx)
         });
+        let me = self.clone();
+        b.raw().implement(&points::RENDER_PRESENT, "render: a frame loop's present", move |cpu, ctx, addr| {
+            loop_present(&me, cpu, ctx, addr)
+        });
         Ok(())
     }
 }
@@ -211,6 +236,42 @@ fn fault(f: MemFault) -> GuestFault {
         access: if f.write { runtime::guest::Access::Write } else { runtime::guest::Access::Read },
         reason: runtime::guest::FaultReason::Unmapped,
     }
+}
+
+/// The present `0x00013f10`: a frame loop's ([`loop_frame`]) asks the
+/// publish and, shown from the scene, returns as the guest's `ret 8` with
+/// the present counter's high word in EAX; every other call, and a kept
+/// loop frame, runs the guest's body.
+fn loop_present(me: &RenderFrame, cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let published = {
+        let mut mem = rt.memory();
+        let ret = mem.u32(cpu.esp)?;
+        let readback = mem.u32(cpu.esp.wrapping_add(4))?;
+        if loop_frame(ret, readback) {
+            let host = me.publish.clone().or_else(publish::installed);
+            let a = publish::Addrs::HALO2;
+            let outcome = publish::present(&a, host.as_deref(), &mut *mem).map_err(fault)?;
+            if outcome == publish::Outcome::Native {
+                me.stats.loop_published.fetch_add(1, Ordering::Relaxed);
+                cpu.eax = mem.u32(a.ticks.present_counter.wrapping_add(4))?;
+                true
+            } else {
+                me.stats.loop_presents.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if published {
+        return ctx.memory().ret(cpu, 8);
+    }
+    if let Some(original) = ctx.runtime().resolve_original(addr) {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
+    let event = ctx.emit(runtime::Event::UnsupportedTarget { pc: cpu.eip, target: addr, kind: runtime::abi::JUMP, route: runtime::abi::ENTRY });
+    Ok(TransferAbi::fault(event))
 }
 
 fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> Result<TransferAbi, GuestFault> {
@@ -331,6 +392,58 @@ mod tests {
             [0x0006_8290, 0x0022_34e0, 0x0012_b2e0],
             "loading presents neither way"
         );
+    }
+
+    /// The three frame loops' presents ask the publish; the frame step's
+    /// own call, a readback and any other caller do not.
+    #[test]
+    fn only_a_frame_loops_present_asks_the_publish() {
+        for ret in LOOP_RETURNS {
+            assert!(loop_frame(ret, 0), "{ret:#x}");
+            assert!(!loop_frame(ret, 0x0070_0000), "a readback is the guest's");
+        }
+        assert!(!loop_frame(0x0022_329b, 0), "the frame step's present is decided there");
+    }
+
+    /// Each loop's call of the present returns to the instruction after
+    /// its `call`: the code there is the image's (`h2 disasm`), and each
+    /// pushes two zeros first.
+    #[test]
+    fn the_loop_returns_follow_their_calls() {
+        // `e8 rel32` is five bytes: the return is the call site plus 5.
+        assert_eq!(LOOP_RETURNS, [0x0012_b784 + 5, 0x0016_3a28 + 5, 0x0016_3adb + 5]);
+    }
+
+    /// A loop frame drawn wholly from the scene is shown by the publish:
+    /// no guest D3D entry (the body that calls `Swap` does not run), the
+    /// counter moved as `0x000141ae` moves it. A kept one leaves it all
+    /// to the guest's body.
+    #[test]
+    fn a_loop_frame_from_the_scene_is_published_with_no_d3d_entry() {
+        use publish::{Open, Outcome, Publish, RAMP_BYTES};
+        struct Scene(Open, std::sync::Mutex<u32>);
+        impl Publish for Scene {
+            fn open(&self, _: &mut dyn GuestMemory) -> Open {
+                self.0
+            }
+            fn present(&self, _: &mut dyn GuestMemory, _: Option<&[u8; RAMP_BYTES]>) -> Result<(), String> {
+                *self.1.lock().unwrap() += 1;
+                Ok(())
+            }
+        }
+        let a = publish::Addrs::HALO2;
+        let mut g = FakeGuest::new();
+        g.map(0x0040_7000, 0x1000).map(0x0046_7000, 0x1000).map(0x0048_5000, 0x1000).map(0x0050_9000, 0x1000);
+        g.put_u32(a.ticks.present_counter, u32::MAX);
+        let scene = Scene(Open::Scene, std::sync::Mutex::new(0));
+        assert!(loop_frame(LOOP_RETURNS[1], 0));
+        assert_eq!(publish::present(&a, Some(&scene), &mut g).unwrap(), Outcome::Native);
+        assert_eq!(*scene.1.lock().unwrap(), 1, "the scene presents, the guest's Swap does not run");
+        assert_eq!(g.u32(a.ticks.present_counter).unwrap(), 0);
+        assert_eq!(g.u32(a.ticks.present_counter + 4).unwrap(), 1, "the carry, as the guest's adc makes it");
+        let kept = Scene(Open::Carried("outside"), std::sync::Mutex::new(0));
+        assert_eq!(publish::present(&a, Some(&kept), &mut g).unwrap().name(), "publish_kept_outside");
+        assert_eq!(*kept.1.lock().unwrap(), 0);
     }
 
     #[test]
