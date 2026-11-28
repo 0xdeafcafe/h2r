@@ -151,8 +151,6 @@ pub struct BinkHle {
     /// The page we mapped, once we have.
     arena: Mutex<Option<u32>>,
     inner: Mutex<Inner>,
-    /// Decode and draw for the native display (`crate::display`).
-    pub(crate) native_display: std::sync::atomic::AtomicBool,
 }
 
 impl BinkHle {
@@ -194,7 +192,6 @@ impl BinkHle {
                 slots: (0..SLOTS).map(|_| None).collect(),
                 requests: Vec::new(),
             }),
-            native_display: std::sync::atomic::AtomicBool::new(false),
         })
     }
     /// Play movie sound here (the game's mixer, [`crate::MixerAudio`]).

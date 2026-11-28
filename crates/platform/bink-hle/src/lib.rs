@@ -216,8 +216,7 @@ pub fn register_skip(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> Vec<Registe
 
 #[cfg(feature = "playback")]
 /// The Bink API overrides. The wrapper runs as compiled, except its decode
-/// and blit and its draw with a native display
-/// ([`BinkHle::use_native_display`], [`display`]).
+/// and blit and its draw, which are Rust's ([`display`]).
 pub fn register_playback(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> Vec<Registered> {
     use addr::*;
     let mut out = Vec::new();
@@ -251,14 +250,12 @@ pub fn register_playback(dispatch: &mut Dispatch, hle: &Arc<BinkHle>) -> Vec<Reg
     api!(BINK_DO_FRAME, "bink_hle::BinkDoFrame", do_frame);
     api!(BINK_NEXT_FRAME, "bink_hle::BinkNextFrame", next_frame);
     api!(BINK_CLOSE, "bink_hle::BinkClose", close);
-    if hle.native_display() {
-        api!(
-            MOVIE_DECODE_AND_BLIT,
-            "bink_hle::movie_decode_native",
-            decode_native
-        );
-        api!(MOVIE_DRAW, "bink_hle::movie_draw_native", draw_native);
-    }
+    api!(
+        MOVIE_DECODE_AND_BLIT,
+        "bink_hle::movie_decode_native",
+        decode_native
+    );
+    api!(MOVIE_DRAW, "bink_hle::movie_draw_native", draw_native);
     out
 }
 

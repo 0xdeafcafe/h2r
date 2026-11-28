@@ -38,7 +38,7 @@ Besides the present, the step replaces no callee by itself. What makes a frame n
 
 ## Movies
 
-With the native renderer on, `movies_glue` sets `BinkHle::use_native_display`, and playback mode adds two overrides to the Bink API's ten ([bink-hle.md](../audio/bink-hle.md)):
+Playback mode adds two overrides to the Bink API's ten ([bink-hle.md](../audio/bink-hle.md)), so the screen-quad batch the draw would begin never runs ([native-ui-producers.md](native-ui-producers.md)):
 
 | Guest | Guest body | Native body |
 |---|---|---|

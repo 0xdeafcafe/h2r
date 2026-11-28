@@ -188,10 +188,10 @@ needs nothing else of the boot. If the wrapper's state page is not mapped it
 leaves it alone.
 
 **Playback (a source is present).** Ten overrides, one per row in the table
-above. The wrapper runs as compiled, except with the native renderer on
-(`BinkHle::use_native_display`, set by `movies_glue`): then its decode and
-blit `0x1568d0` and its draw `0x156960` are replaced too, and the picture
-goes to the overlay without touching the guest's texture
+above. The wrapper runs as compiled, except its decode and blit `0x1568d0` and
+its draw `0x156960`, which are replaced too: the picture goes to the
+overlay without touching the guest's texture, and the screen-quad batch
+the draw would begin never runs
 ([retire-d3d-display.md](../graphics/retire-d3d-display.md#movies)). `BinkOpen` asks the source for the
 movie's stream and returns a fake HBINK; if it declines (movie not
 transcoded or not current, unreadable, nonsense dimensions, no free handle)
@@ -415,16 +415,13 @@ BinkOpen, the four `MovieStart` call sites, the `ST_*` state words in
 Everything above is tested against synthetic guest state. A run of the full
 lifted game is needed to show:
 
-1. The texture path: `0x23e340` creating the X8R8G8B8 linear texture under
-   crates/platform/d3d, the lock helper's pitch, and the quad draw (`0x156960`)
-   showing the re-uploaded texels.
-2. The wrapper's allocation (`0x12d2f0`, 4 or 20 MiB from the game's cache)
+1. The wrapper's allocation (`0x12d2f0`, 4 or 20 MiB from the game's cache)
    succeeding at the intro, main menu idle and credits.
-3. Sound level and latency: the movie voice plays at full volume with no
+2. Sound level and latency: the movie voice plays at full volume with no
    mix bins (the game's `BinkSetMixBinVolumes` is ignored), and picture and
    sound both start at `BinkOpen` and run on their own clocks (wall and
    mixer). They stay together only while logical time keeps to the wall;
    a run that falls behind drops frames to keep the picture on time while
    the sound lags.
-4. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen; in
+3. Credits (`0x2ab8c0`) show `0x1564e0`'s remaining time on screen; in
    playback mode it works from the HBINK.

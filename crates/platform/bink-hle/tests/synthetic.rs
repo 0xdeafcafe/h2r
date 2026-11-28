@@ -1256,9 +1256,7 @@ fn a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone() {
         }
     }
     let (mut w, _hle, reg, mode) = world(|c| {
-        let hle = BinkHle::with_clock(Some(Arc::new(FakeSource { name: "intro_60", frames: 3 })), c);
-        hle.use_native_display(true);
-        hle
+        BinkHle::with_clock(Some(Arc::new(FakeSource { name: "intro_60", frames: 3 })), c)
     });
     assert_eq!(mode, Mode::Playback);
     let addrs: Vec<u32> = reg.iter().map(|r| r.addr).collect();
