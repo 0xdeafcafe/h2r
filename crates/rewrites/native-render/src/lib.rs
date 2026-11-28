@@ -72,6 +72,8 @@ pub mod fog;
 pub mod fog_gpu;
 #[cfg(feature = "gpu")]
 pub mod frame_graph;
+#[cfg(feature = "gpu")]
+pub mod frame_owner;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -140,6 +142,14 @@ pub mod pipelines;
 #[cfg(feature = "gpu")]
 pub mod program;
 #[cfg(feature = "gpu")]
+pub mod lighting;
+#[cfg(feature = "gpu")]
+pub mod render_scale;
+#[cfg(feature = "gpu")]
+pub mod renderer;
+#[cfg(feature = "gpu")]
+pub mod stage;
+#[cfg(feature = "gpu")]
 pub mod screen_gpu;
 #[cfg(feature = "gpu")]
 pub mod screen_look;
@@ -189,3 +199,12 @@ pub use scene_extract::layout::{
     aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip, sky_rows,
     structure_parameters, world_layers, world_ranges,
 };
+
+#[cfg(feature = "gpu")]
+pub use lighting::Lighting;
+#[cfg(feature = "gpu")]
+pub use frame_owner::FrameOwner;
+#[cfg(feature = "gpu")]
+pub use renderer::Renderer;
+#[cfg(feature = "gpu")]
+pub use stage::{Frame, FrameBuilder, FrameOp, Stage, StageWork, frame_builder};
