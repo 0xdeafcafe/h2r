@@ -11,7 +11,6 @@ pub mod hud_inputs;
 pub mod hud_overlay;
 pub mod kept;
 pub mod modal_blur;
-mod model;
 mod outline;
 pub mod sensor;
 pub mod strings;
@@ -265,10 +264,6 @@ pub trait Host: Send + Sync {
         false
     }
 
-    fn model_ranges(&self, _mem: &mut dyn GuestMemory, _ranges: &[engine::ui_model::Range]) -> bool {
-        false
-    }
-
     fn outline(&self, _mem: &mut dyn GuestMemory, _vertices: &OutlineVertices) -> bool {
         false
     }
@@ -285,10 +280,11 @@ pub trait Host: Send + Sync {
         false
     }
 
-    /// A model widget's view has been read, with its bounds (`left, top,
-    /// right, bottom`, canvas pixels) and the camera and objects it draws
-    /// ([`model`]). The game still draws the widget; the host may queue a
-    /// pass of its own beside it (the Forge monitor on the Appearance page,
+    /// A model widget's view has been read at its item call, with its
+    /// bounds (`left, top, right, bottom`, canvas pixels) and the camera
+    /// and objects it draws (`ui_overlay::model::view`). The overlay draws
+    /// the widget; the host may queue a pass of its own beside it (the
+    /// Forge monitor on the Appearance page,
     /// docs/game/forge-monitor-appearance.md, ML4b).
     fn model_view(
         &self,

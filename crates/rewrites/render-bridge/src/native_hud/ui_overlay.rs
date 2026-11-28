@@ -130,10 +130,6 @@ impl Gap {
     pub const fn class(cause: &'static str) -> Self {
         Gap::new(Unread::Draw, cause)
     }
-
-    pub const fn model(cause: &'static str) -> Self {
-        Gap::new(Unread::Model, cause)
-    }
 }
 
 impl From<Unread> for Gap {
@@ -329,7 +325,7 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
             frame.draws.extend(list::arrows(mem, e.widget, viewport)?.into_iter().map(UiDraw::Bitmap));
             return Ok(frame);
         }
-        draws::MODEL => walk::read_widget_header(mem, e.widget, e.depth, model::read(mem, e.widget)?)?,
+        draws::MODEL => walk::read_widget_header(mem, e.widget, e.depth, model::read(mem, e.widget, viewport)?)?,
         _ => match walk::read_widget(mem, e.widget, e.depth) {
             Ok(widget) => widget,
             Err(Unread::Bitmap) => {
@@ -730,18 +726,15 @@ mod tests {
         let kept = |name: &str| {
             super::super::kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
         };
-        let (tabs, text, view) = (
+        let (tabs, text) = (
             kept("scene_kept_ui_widget_text_tabs"),
             kept("scene_kept_ui_widget_text"),
-            kept("scene_kept_ui_widget_model_view"),
         );
         MenuRefusal::from(Gap::text("text_tabs")).count();
         MenuRefusal::from(Unread::Text).count();
-        MenuRefusal::from(Gap::model("model_view")).count();
         MenuRefusal::from(Unread::Shader).count();
         assert_eq!(kept("scene_kept_ui_widget_text_tabs"), tabs + 1);
         assert_eq!(kept("scene_kept_ui_widget_text"), text + 1);
-        assert_eq!(kept("scene_kept_ui_widget_model_view"), view + 1);
         assert_eq!(kept("scene_kept_ui_widget_shader"), 0, "a shader bitmap is drawn at its quad");
     }
 

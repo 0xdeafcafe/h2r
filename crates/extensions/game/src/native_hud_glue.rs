@@ -54,7 +54,7 @@ impl ScopeStack {
         match self.active(owner).filter(|scope| scope.eligible)?.kind {
             UiScope::Hud | UiScope::Layers | UiScope::Widget => Some(ScreenDraw::Widget),
             UiScope::Loading => Some(ScreenDraw::Loading),
-            UiScope::Model | UiScope::Overlay | UiScope::FrameTail => None,
+            UiScope::Overlay | UiScope::FrameTail => None,
         }
     }
 
@@ -116,10 +116,6 @@ impl DrawAdmission for Admission {
         snapshot: &DrawSnapshot<'_>,
     ) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let scope = SCOPES.with(|scopes| scopes.borrow().active(self.owner))?;
-        if scope.kind == UiScope::Model {
-            kept::ui(Ui::ModelGuestBuilderDraw);
-            return None;
-        }
         if scope.kind == UiScope::FrameTail {
             let draw = snapshot.draw;
             if scope.eligible && tail_fan(draw.entry, draw.primitive, draw.vertex_count) {
@@ -513,40 +509,6 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.fan(mem, vertices, Some(engine::hud_sensor::BLIP_PUSH_BYTES))
     }
 
-    fn model_ranges(&self, mem: &mut dyn GuestMemory, ranges: &[engine::ui_model::Range]) -> bool {
-        if !SCOPES.with(|s| {
-            s.borrow().active(self.admission.owner)
-                .is_some_and(|scope| scope.kind == UiScope::Model && scope.eligible)
-        }) {
-            return false;
-        }
-        let Some((head, rest)) = ranges.split_first() else { return false };
-        if rest.iter().any(|range| range.strip != head.strip) {
-            return false;
-        }
-        let Ok(mut device) = self.device.lock() else {
-            return false;
-        };
-        let mut candidate = Direct::new(&self.admission, device.swap_count());
-        let mut memory = DeviceMemory(mem);
-        if !rest.is_empty() {
-            if !matches!(device.drain_admission_boundary(&mut memory), Ok(true)) {
-                Ui::Order.count();
-                return false;
-            }
-            let ranges: Vec<_> = rest.iter().map(|r| (r.indices, r.count)).collect();
-            let Ok(siblings) = device.indexed_siblings(&memory, &ranges) else {
-                Ui::Geometry.count();
-                return false;
-            };
-            candidate.siblings = siblings.into();
-        }
-        let primitive = if head.strip { PrimitiveType::TriangleStrip } else { PrimitiveType::TriangleList };
-        device.try_native_indexed_draw(
-            &mut memory, primitive, head.count, head.indices, &candidate,
-        ).ok() == Some(true)
-    }
-
     fn outline(&self, mem: &mut dyn GuestMemory, vertices: &OutlineVertices) -> bool {
         if !self.permits_draw() {
             return false;
@@ -707,7 +669,6 @@ pub(crate) mod tests {
         for (kind, expected) in [
             (UiScope::Layers, Some(ScreenDraw::Widget)),
             (UiScope::Widget, Some(ScreenDraw::Widget)),
-            (UiScope::Model, None),
             (UiScope::Overlay, None),
             (UiScope::Loading, Some(ScreenDraw::Loading)),
         ] {

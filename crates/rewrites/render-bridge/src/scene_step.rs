@@ -143,15 +143,6 @@ struct GatherObjects {
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
 static PRESENT_READY: AtomicBool = AtomicBool::new(false);
-/// A menu model view (`MODEL_VIEW_CALL` .. `MODEL_VIEW_RETURN`) is drawing:
-/// its camera is the widget's, not the view record's, so the gather lens
-/// has no say over its objects.
-static IN_MODEL_VIEW: AtomicBool = AtomicBool::new(false);
-
-/// Mark the open menu model view ([`gather_lens_object`] declines inside it).
-pub(crate) fn set_model_view(open: bool) {
-    IN_MODEL_VIEW.store(open, Ordering::Relaxed);
-}
 /// The object shadow being drawn: its index in the open scene's
 /// `object_shadows`, or [`NO_SHADOW`] ([`object_shadow_at`]).
 static SHADOW_AT: AtomicU32 = AtomicU32::new(NO_SHADOW);
@@ -1541,12 +1532,8 @@ fn display_additions(
 /// window the guest's object setup (`native_scene_lists::setup`) leaves
 /// an object outside the set undrawn, so the setup's pose evaluation,
 /// animation selection and render-state writes run for the same objects
-/// in every window; the display supplement draws the rest. `None` too
-/// inside a menu model view, whose camera is not the view record's.
+/// in every window; the display supplement draws the rest.
 pub(crate) fn gather_lens_object(mem: &dyn GuestMemory, handle: u32) -> Option<bool> {
-    if IN_MODEL_VIEW.load(Ordering::Relaxed) {
-        return None;
-    }
     with_step(|step| {
         let VisibilityLens::Guest { frustum, gather, .. } = step.visibility_lens else { return None };
         if !window_exceeds_gather(frustum, gather) {
@@ -2467,42 +2454,6 @@ mod tests {
         assert_eq!(GuestLensState::of(1.2, 1.2, factor), GuestLensState::Retail);
         assert_eq!(GuestLensState::of(1.2, 0.6, factor), GuestLensState::Other);
         assert_eq!(GuestLensState::of(0.0, 0.0, factor), GuestLensState::Other);
-    }
-
-    #[test]
-    fn an_object_in_a_menu_model_view_is_never_skipped_by_the_lens() {
-        let mut mem = engine::testing::FakeGuest::new();
-        mem.map(FRAME & !0xfff, 0x1000).map(VIEW_INDEX & !0xfff, 0x1000)
-            .put_u32(FRAME, 4).put_u32(VIEW_INDEX, 0);
-        with_step(|step| {
-            step.visibility_lens = VisibilityLens::Guest { projection: 0.7, frustum: 0.8, gather: 1.0 };
-            step.gathered = Some(GatherObjects { key: (4, 0), objects: Some(vec![1]), skipped: Vec::new() });
-        });
-        set_model_view(false);
-        assert_eq!(gather_lens_object(&mem, 9), Some(false), "a main-view object outside the set");
-        set_model_view(true);
-        assert_eq!(gather_lens_object(&mem, 9), None, "no lens test in a model view");
-        set_model_view(false);
-        with_step(|step| *step = Step::default());
-    }
-
-    #[test]
-    fn choose_profile_arm_parts_are_not_culled_by_the_lens_at_21_by_9() {
-        let mut mem = engine::testing::FakeGuest::new();
-        mem.map(FRAME & !0xfff, 0x1000).map(VIEW_INDEX & !0xfff, 0x1000)
-            .put_u32(FRAME, 7).put_u32(VIEW_INDEX, 0);
-        with_step(|step| {
-            step.visibility_lens = VisibilityLens::Guest { projection: 0.55, frustum: 0.55, gather: 1.0 };
-            step.gathered = Some(GatherObjects { key: (7, 0), objects: Some(vec![1]), skipped: Vec::new() });
-        });
-        let before = GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed);
-        set_model_view(true);
-        for arm in [20, 21, 22] {
-            assert_eq!(gather_lens_object(&mem, arm), None);
-        }
-        set_model_view(false);
-        assert_eq!(GUEST_LENS_OBJECTS_SKIPPED.load(Ordering::Relaxed), before);
-        with_step(|step| *step = Step::default());
     }
 
     #[test]
