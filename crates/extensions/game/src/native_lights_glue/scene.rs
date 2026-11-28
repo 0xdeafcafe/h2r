@@ -52,7 +52,7 @@ pub(super) enum Op {
 /// The map target of a caster's pass: 9 for the depth map, 10 for the
 /// colour mask (pass flag 4 set with 5 clear).
 fn caster_target(pass: Option<ShadowPass>) -> Result<u32, Keep> {
-    let pass = pass.ok_or(Keep::Shadow("state"))?;
+    let pass = pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
     match (pass.colour_mask(), pass.target) {
         (false, 9) => Ok(9),
         (true, 10) => Ok(10),
@@ -97,7 +97,7 @@ pub(super) fn object_ops(layers: &[(u8, Option<ShadowPass>)], filter: bool) -> R
     }
     let mut out = ops(layers)?;
     if filter {
-        let at = out.iter().position(|op| *op == Op::Freeze(10)).ok_or(Keep::Shadow("state"))?;
+        let at = out.iter().position(|op| *op == Op::Freeze(10)).ok_or(Keep::Shadow("state: an object shadow with no mask freeze"))?;
         out.insert(at, Op::Filter);
     }
     Ok(out)
@@ -427,7 +427,7 @@ impl Glue {
                 Op::Freeze(n) => Step {
                     targets: game_target(n),
                     stage: Box::new(FreezeMap {
-                        frozen: frozen.clone().ok_or(Keep::Shadow("state"))?,
+                        frozen: frozen.clone().ok_or(Keep::Shadow("state: a freeze with no caster pass"))?,
                         kind: if n == 10 { MapKind::ColourMask } else { MapKind::Depth },
                     }),
                 },
@@ -457,7 +457,7 @@ impl Glue {
                     }
                 }
                 Op::Filter => {
-                    let filter = filter.clone().ok_or(Keep::Shadow("state"))?;
+                    let filter = filter.clone().ok_or(Keep::Shadow("state: a filter step with no object shadow filter"))?;
                     Step {
                         targets: game_target(10),
                         stage: Box::new(crate::native_shadows_glue::ShadowFilterPass {

@@ -12,9 +12,20 @@ use crate::light_scene::{self, Draw, Resident};
 /// Why a shadow group is not drawn from the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The target, projection or raster state did not read or does not
-    /// match the layer's target choice.
-    State,
+    /// The group's shadow pass state did not read.
+    NoPass,
+    /// The pass's target size is zero in a dimension.
+    EmptySize,
+    /// The pass draws with stencil mode `n` (the guest's stencil-tested
+    /// shadow layers; the native pass has no stencil).
+    Stencil(u32),
+    /// A caster or receiver layer whose projection did not read.
+    NoProjection,
+    /// A caster whose target is not its map's (9 for depth, 10 for the
+    /// colour mask), or an opaque layer not on target 1.
+    Target,
+    /// The group's layer is not one of 10, 11 or 14.
+    Layer,
     /// A geometry refusal of the shared light-group planner.
     Light(light_scene::Refusal),
 }
@@ -22,7 +33,12 @@ pub enum Refusal {
 impl Refusal {
     pub fn name(self) -> &'static str {
         match self {
-            Self::State => "state",
+            Self::NoPass => "state: no shadow pass",
+            Self::EmptySize => "state: an empty shadow target",
+            Self::Stencil(_) => "state: a stencil-tested shadow pass",
+            Self::NoProjection => "state: no shadow projection",
+            Self::Target => "state: the layer's target is not its map's",
+            Self::Layer => "state: not a shadow layer",
             Self::Light(light) => light.name(),
         }
     }
@@ -35,19 +51,24 @@ impl From<light_scene::Refusal> for Refusal {
 }
 
 pub(crate) fn validate(group: &LightGroup) -> Result<(), Refusal> {
-    let pass = group.pass.ok_or(Refusal::State)?;
-    if pass.size.contains(&0) || pass.stencil_mode != 0 {
-        return Err(Refusal::State);
+    let pass = group.pass.ok_or(Refusal::NoPass)?;
+    if pass.size.contains(&0) {
+        return Err(Refusal::EmptySize);
     }
+    if pass.stencil_mode != 0 {
+        return Err(Refusal::Stencil(pass.stencil_mode));
+    }
+    let projected = || group.projection.map(|_| ()).ok_or(Refusal::NoProjection);
     match group.layer {
-        10 if group.projection.is_some()
-            && pass.target == if pass.colour_mask() { 10 } else { 9 } =>
-        {
-            Ok(())
+        10 => {
+            projected()?;
+            let map = if pass.colour_mask() { 10 } else { 9 };
+            if pass.target == map { Ok(()) } else { Err(Refusal::Target) }
         }
-        11 if group.projection.is_some() => Ok(()),
+        11 => projected(),
         14 if pass.target == 1 => Ok(()),
-        _ => Err(Refusal::State),
+        14 => Err(Refusal::Target),
+        _ => Err(Refusal::Layer),
     }
 }
 
@@ -113,18 +134,18 @@ mod tests {
         let scene = FrameScene::default();
         let valid = group();
         assert_eq!(plan(&scene, &valid, &Empty).unwrap().draws.len(), 0);
-        let changes: [&dyn Fn(&mut LightGroup); 6] = [
-            &|g| g.layer = 12,
-            &|g| g.projection = None,
-            &|g| g.pass.as_mut().unwrap().target = 10,
-            &|g| g.pass.as_mut().unwrap().size[0] = 0,
-            &|g| g.pass.as_mut().unwrap().stencil_mode = 1,
-            &|g| g.pass = None,
+        let changes: [(&dyn Fn(&mut LightGroup), Refusal); 6] = [
+            (&|g| g.layer = 12, Refusal::Layer),
+            (&|g| g.projection = None, Refusal::NoProjection),
+            (&|g| g.pass.as_mut().unwrap().target = 10, Refusal::Target),
+            (&|g| g.pass.as_mut().unwrap().size[0] = 0, Refusal::EmptySize),
+            (&|g| g.pass.as_mut().unwrap().stencil_mode = 1, Refusal::Stencil(1)),
+            (&|g| g.pass = None, Refusal::NoPass),
         ];
-        for change in changes {
+        for (change, why) in changes {
             let mut invalid = valid.clone();
             change(&mut invalid);
-            assert_eq!(plan(&scene, &invalid, &Empty).unwrap_err(), Refusal::State);
+            assert_eq!(plan(&scene, &invalid, &Empty).unwrap_err(), why);
         }
         let mut mask = valid;
         mask.pass.as_mut().unwrap().flags = 1 << 4;
@@ -156,5 +177,25 @@ mod tests {
             opaque.pass.as_mut().unwrap().target = 1;
             assert_eq!(plan(&scene, &opaque, &Empty).unwrap().draws.len(), 0);
         }
+    }
+
+    #[test]
+    fn each_shadow_state_refusal_names_its_cause() {
+        let names = [
+            Refusal::NoPass,
+            Refusal::EmptySize,
+            Refusal::Stencil(2),
+            Refusal::NoProjection,
+            Refusal::Target,
+            Refusal::Layer,
+        ]
+        .map(Refusal::name);
+        for (i, a) in names.iter().enumerate() {
+            assert!(a.starts_with("state: "), "{a}");
+            assert!(names[i + 1..].iter().all(|b| a != b), "{a} named twice");
+        }
+        let mut opaque = group();
+        opaque.layer = 14;
+        assert_eq!(validate(&opaque), Err(Refusal::Target), "layer 14 off target 1");
     }
 }

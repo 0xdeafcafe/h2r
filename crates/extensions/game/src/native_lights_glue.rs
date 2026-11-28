@@ -401,9 +401,9 @@ impl Glue {
     ) -> Result<PreparedLight, Keep> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow(native_render::shadow_scene::Refusal::Layer.name()));
         }
-        let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
+        let shadow = group.group.pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
         let projection = group.group.projection;
         let ready = self.ready(mem)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
@@ -510,7 +510,7 @@ impl Glue {
                     })
             });
         let (shadow_map, frozen) = if needs_map {
-            let projection = projection.ok_or(Keep::Shadow("state"))?;
+            let projection = projection.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoProjection.name()))?;
             let projection = std::array::from_fn(|n| projection[n / 4][n % 4]);
             let kind = if shadow.colour_mask() {
                 native_render::shadow_gpu::MapKind::ColourMask
@@ -556,12 +556,12 @@ impl Glue {
         let group = a.group;
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow(native_render::shadow_scene::Refusal::Layer.name()));
         }
-        let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
+        let shadow = group.group.pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
         if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), layer as u8) != Some(shadow) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow("state: the group's shadow pass is not the one the layer set"));
         }
         let prepared = self.shadow_prepared(
             &*mem,
