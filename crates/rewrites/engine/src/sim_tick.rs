@@ -94,7 +94,8 @@ pub const SYSTEMS: &[System] = &[
     guest(0x0013_c680, "time_clock_13c680"),
     guest(0x0012_3430, "object_list_update"),
     guest(0x0022_5730, "net_flag_decay"),
-    guest(0x0016_5dc1, "first_person"),
+    // The first-person block's per-user refresh, crate::players_phases.
+    rust(0x0016_5dc1, "first_person"),
     guest(0x0015_3950, "screen_shake_players"),
     guest(0x0019_17b2, "hud"),
     // The countdown requests, crate::countdown_requests.
@@ -299,7 +300,7 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
     /// The Rust bodies ([`crate::ai_update`], [`crate::hs_update`], [`crate::effects_phase`], [`crate::post_game`],
-    /// [`crate::countdown_requests`]); off only in tests, as the lifted
+    /// [`crate::players_phases`], [`crate::countdown_requests`]); off only in tests, as the lifted
     /// reference.
     pub rust: bool,
 }
@@ -448,8 +449,16 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
             if views == 0 && is_presentation(i) {
                 continue;
             }
+            // A presentation phase draws from the presentation's seeds, in
+            // Rust or in the guest.
+            let isolate = present == Present::LocalOnly && is_presentation(i);
+            let sim = if isolate { cx.write(|m| PRESENT_SEEDS.swap_in(m)) } else { None };
             let guest = !bodies.runs(phase)
                 || match phase.entry {
+                    crate::players_phases::FIRST_PERSON => {
+                        crate::players_phases::first_person(&cx, RECORD_SIZE).await?;
+                        false
+                    }
                     EFFECTS => {
                         crate::effects_phase::run(&cx, RECORD_SIZE).await?;
                         false
@@ -479,12 +488,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                     Form::StackRecordEcx => c.args([record]).ecx(record),
                     Form::EbxRecord => c.ebx(record),
                 };
-                let isolate = present == Present::LocalOnly && is_presentation(i);
-                let sim = if isolate { cx.write(|m| PRESENT_SEEDS.swap_in(m)) } else { None };
                 cx.call(c).await?;
-                if let Some(sim) = sim {
-                    cx.write(|m| PRESENT_SEEDS.swap_out(m, sim));
-                }
+            }
+            if let Some(sim) = sim {
+                cx.write(|m| PRESENT_SEEDS.swap_out(m, sim));
             }
             let now = Instant::now();
             phase_ns[i] = ns_between(mark, now);
@@ -609,6 +616,12 @@ mod tests {
         // No game engine: post_game's globals at a zero page, table slot 0.
         g.map(crate::post_game::GAME, 4).map(GAME_GLOBALS, 0x1000).put_u32(crate::post_game::GAME, GAME_GLOBALS);
         g.map(crate::post_game::ENGINES, 4);
+        // First person: no local user is mapped to a player.
+        g.map(crate::players_phases::BLOCK, 4).map(crate::players_phases::GLOBALS, 4).map(PLAYERS_GLOBALS, 0x20);
+        g.put_u32(crate::players_phases::GLOBALS, PLAYERS_GLOBALS);
+        for user in 0..4 {
+            g.put_u32(PLAYERS_GLOBALS + 0xc + 4 * user, u32::MAX);
+        }
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
         let record = STACK - RECORD_SIZE;
@@ -630,6 +643,7 @@ mod tests {
         assert!(!targets_of(&run).contains(&crate::hs_update::ENTRY));
         assert!(!targets_of(&run).contains(&crate::ai_update::ENTRY));
         assert!(!targets_of(&run).contains(&crate::post_game::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::players_phases::FIRST_PERSON));
         assert_eq!(l.total_calls(), guest_phases() as u64);
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         assert!(!targets.contains(&EFFECTS));
@@ -642,6 +656,7 @@ mod tests {
 
     /// A zero page for the AI globals in the driver tests.
     const AI_GLOBALS: u32 = 0x0057_0000;
+    const PLAYERS_GLOBALS: u32 = 0x0057_2000;
     /// A zero page for the game globals in the driver tests.
     const GAME_GLOBALS: u32 = 0x0057_1000;
 

@@ -54,6 +54,7 @@ and `tick-ledger.toml` counts them:
 | 8 `script_scheduler` `0x209310` | `engine/src/hs_update.rs` | `HS_THREAD_EXECUTE` `0x209850` per thread; its tail call, the object-list sweep `0x1deed0`, is `engine/src/hs_object_lists.rs` |
 | 15 `effects` `0x176e40` | `engine/src/effects_phase.rs` | the walk's nine callees |
 | 17 `post_game` `0x15ca10` | `engine/src/post_game.rs` | eleven functions; the round state machine `0x15c550` is `engine/src/round_state.rs`, whose state change still calls its leaves and the engine's state virtual |
+| 26 `first_person` `0x165dc1` | `engine/src/players_phases.rs` | five leaves: `0x16896f`, `0x1682bf`, `0xcbd50`, `0x167e86`, `0x166d75` |
 | 29 `countdown_requests` `0x16f200` | `engine/src/countdown_requests.rs` | nothing |
 
 `ai_update_matches_lifted`, `hs_update_matches_lifted` and
@@ -62,7 +63,7 @@ the bodies to the lifted functions with the guest callees stubbed. The in-place
 call that avoids the unwind per phase is a later speed-up, not a
 prerequisite.
 
-**Presentation phases.** Phases 26 (first person `0x165dc1`), 28 (HUD
+**Presentation phases.** Phases 26 (first person `0x165dc1`, in Rust: `engine/src/players_phases.rs`), 28 (HUD
 `0x1917b2`) and 29 (the countdown requests `0x16f200`, in Rust: `engine/src/countdown_requests.rs`) are the seats'
 views (`impl.sim.present`, on; `Present::LocalOnly`):
 
