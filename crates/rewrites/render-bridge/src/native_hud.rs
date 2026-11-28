@@ -396,7 +396,7 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
                 let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
                 ui_overlay::run_part(frame, run, mem)
             };
-            let Some(part) = part else { unimplemented!("menus: run not read again after a guest draw") };
+            let part = part.unwrap_or_else(|why| why.panic());
             // A run of containers has nothing to draw: it needs no pass.
             // The pass and the scene's overlay share the run's items.
             let part = Arc::new(part);
@@ -852,8 +852,17 @@ impl Feature for NativeHud {
         // that, nothing is claimed.
         b.raw().before(&ui_overlay::LIST_READY, "native_ui_overlay_list", |c| {
             let rt = Arc::clone(c.ctx.runtime());
-            let continuation = engine::points::ui_render::ITEM_CONTINUATION;
-            if !rt.read_dispatch(|dispatch| dispatch.has_resume(continuation)) {
+            // A claim needs every hook that settles it: the item call's
+            // scope (`ui::enter`, which needs the item return), the resume
+            // after a left-out draw and the list's end, which closes it.
+            // Without one a claimed draw would not be left out, or the
+            // claim would stay open to the next list at its frame.
+            use engine::points::ui_render::{ITEM_CONTINUATION, ITEM_RETURN};
+            if !rt.read_dispatch(|d| {
+                d.has_resume(ITEM_CONTINUATION)
+                    && d.has_generated(ITEM_RETURN.base)
+                    && d.has_generated(ui_overlay::LIST_DONE.base)
+            }) {
                 return Ok(Flow::Continue);
             }
             if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {

@@ -56,6 +56,9 @@ pub const SCREEN_RECT: u32 = 0x0048_5648;
 /// The one viewport the overlay draws menus in: the full UI canvas.
 pub const FULL_SCREEN: [i16; 4] = [0, 0, walk::CANVAS[1] as i16, walk::CANVAS[0] as i16];
 
+/// The virtual keyboard screen's draw (vtable `0x00459ba0`).
+const KEYBOARD_DRAW: u32 = 0x0023_7c04;
+
 /// One entry of the sorted list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListEntry {
@@ -340,8 +343,10 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, arrows: ListAr
                     }
                 }
             }
-            // A class whose draw the overlay does not know: a runtime
-            // class or a retail draw not read yet.
+            // A class whose draw the overlay does not know: the virtual
+            // keyboard's (`0x00237c04`, its caret and key art), the one
+            // retail draw not read yet, or a runtime class's.
+            Err(Unread::Draw) if draw == KEYBOARD_DRAW => return Err(Gap::class("draw_keyboard").into()),
             Err(Unread::Draw) => return Err(Gap::class("draw_class").into()),
             Err(why) => return Err(why.into()),
         },
@@ -482,8 +487,11 @@ pub fn at_item(frame: u32, ordinal: u32) -> Item {
 
 /// The items of run `run` of the claim at `frame`, to place. A run is
 /// placed once, at its first entry, so its planned items are moved out,
-/// not copied.
-pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay> {
+/// not copied. After a guest draw in the list the run's entries are read
+/// again, as the guest's draws would read them now; `Err` names why one
+/// no longer lists (no claim or run there is the planner's
+/// [`MenuRefusal::Mismatched`]).
+pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Result<Overlay, MenuRefusal> {
     let pending = CLAIMS.with(|c| {
         let mut claims = c.borrow_mut();
         let claim = claims.iter_mut().rev().find(|c| c.frame == frame)?;
@@ -494,39 +502,46 @@ pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay
         } else {
             Ok(std::mem::replace(&mut run.part, Overlay::new(walk::CANVAS)))
         })
-    })?;
+    }).ok_or(MenuRefusal::Mismatched)?;
     let ordinals = match pending {
-        Ok(part) => return Some(part),
+        Ok(part) => return Ok(part),
         Err(refresh) => refresh,
     };
-    if screen_rect(mem) != Some(FULL_SCREEN) {
-        return None;
-    }
-    let list = ListFrame::read(mem, frame)?;
-    let host = super::host()?;
+    check_frame(mem)?;
+    let list = ListFrame::read(mem, frame).ok_or(MenuRefusal::from(Unread::Unreadable))?;
+    let host = super::host().ok_or(MenuRefusal::Pass)?;
     let fonts = host.ui_text(mem);
     let mut refreshed = Overlay::new(walk::CANVAS);
     for ordinal in ordinals {
-        let entry = list.entry(mem, ordinal)?;
+        let entry = list.entry(mem, ordinal).ok_or(MenuRefusal::from(Unread::Unreadable))?;
         if host.ui_custom_widget(mem, entry.widget) {
-            return None;
+            return Err(Gap::class("draw_custom").into());
         }
         let arrows = |vtable, height| host.ui_list_arrows(vtable, height);
-        let items = part(&Ro(mem), &entry, list.user, fonts.as_deref().unwrap_or(&NoText), &arrows).ok()?;
-        refreshed.append(&items).ok()?;
+        let items = part(&Ro(mem), &entry, list.user, fonts.as_deref().unwrap_or(&NoText), &arrows)?;
+        refreshed.append(&items).map_err(|_| MenuRefusal::Unlisted)?;
     }
-    Some(refreshed)
+    Ok(refreshed)
 }
 
 /// Entry `ordinal` of the list at `frame` was left out: the guest state
 /// its draw writes, written in its place (a text or button's reveal
-/// cursor, `text::left_out`). Other draws write none the overlay reads.
+/// cursor, `text::left_out`; a button's or list's screen id no screen tag
+/// has, which the screen lookup notes at `list::MISSED_SCREEN`). Other
+/// draws write none.
 pub fn left_out(mem: &mut dyn GuestMemory, frame: u32, ordinal: u32) {
     use walk::draws;
     let Some(widget) = ListFrame::read(&*mem, frame).and_then(|l| l.entry(&*mem, ordinal)).map(|e| e.widget) else {
         return;
     };
-    match walk::widget_draw(&Ro(&*mem), widget) {
+    let draw = walk::widget_draw(&Ro(&*mem), widget);
+    if let Ok(d @ (draws::BUTTON | draws::LIST)) = draw
+        && let Some(id) = list::missed_screen(&Ro(&*mem), widget, d == draws::BUTTON)
+        && mem.write(list::MISSED_SCREEN, &id.to_le_bytes()).is_err()
+    {
+        unimplemented!("menus: the missed screen id does not write");
+    }
+    match draw {
         Ok(draws::TEXT) => text::left_out(mem, widget, false),
         Ok(draws::BUTTON) => text::left_out(mem, widget, true),
         _ => {}
@@ -762,10 +777,10 @@ mod tests {
         open(claim);
         assert_eq!(at_item(0x8100, 0), Item::Place(0));
         let guest = FakeGuest::new();
-        assert_eq!(run_part(0x8100, 0, &guest), Some(planned));
+        assert_eq!(run_part(0x8100, 0, &guest), Ok(planned));
         let left = CLAIMS.with(|c| c.borrow().last().map(|c| (c.runs[0].part.items.len(), c.claimed())));
         assert_eq!(left, Some((0, 1)), "moved, and still claimed");
-        assert_eq!(run_part(0x8100, 1, &guest), None, "no such run");
+        assert_eq!(run_part(0x8100, 1, &guest), Err(MenuRefusal::Mismatched), "no such run");
         placed(0x8100, 0, true);
         assert!(close(0x8100).is_empty());
         forget();
