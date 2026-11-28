@@ -1,5 +1,6 @@
-//! Result parity for the vector test and the outer BSP context walk, and
-//! the shadow-then-answer gate for their crossing exits.
+//! Result parity for the vector test and the outer BSP context walk. A
+//! straight walk or a crossing exit is answered natively; the matcher path
+//! runs lifted and is compared at its return.
 use super::{
     Bail, CollisionMemory, CollisionWorld, Plan, Read,
     crossing::{self, Exit},
@@ -177,8 +178,9 @@ fn dispatch(c: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld, entry: Entry)
             }
             // D under the wrapper stays lifted: C's comparison owns it.
             let exit = if can_answer { Exit::model(c, g, &plan) } else { None };
-            if let Some(exit) = exit.as_ref().filter(|_| world.answer_crossing(entry)) {
+            if let Some(exit) = exit.as_ref() {
                 let ret = crossing::commit(c, g, &plan, exit)?;
+                world.answered_crossing(entry);
                 world.record(entry, &Ok(()));
                 return Ok((Some(ret), None));
             }

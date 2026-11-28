@@ -41,7 +41,7 @@ pub use flood::{Flood, FloodQuery, Topology, TopologyKey};
 pub use mem::{Fault, GuestRead};
 pub use objects::{Visit, VisitQuery};
 pub use world::{
-    CROSSING_CLEAN_RUN, CROSSING_SAMPLE_EVERY, CollisionWorld, Entry, EntryStats, RayParity, SourceFingerprint, Stats,
+    CollisionWorld, Entry, EntryStats, RayParity, SourceFingerprint, Stats,
     VectorParity,
 };
 

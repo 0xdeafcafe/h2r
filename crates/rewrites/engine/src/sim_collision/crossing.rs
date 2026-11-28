@@ -415,7 +415,7 @@ mod tests {
     use super::super::{CollisionWorld, layout, vector_parity};
     use runtime::{CpuAbi, Guest, guest::Permissions};
     use sim_collision::synth::{self, Builder};
-    use sim_collision::{CROSSING_CLEAN_RUN, Entry};
+    use sim_collision::Entry;
     use sim_core::Epoch;
 
     const DATA: u32 = 0x10_000;
@@ -467,20 +467,17 @@ mod tests {
     }
 
     #[test]
-    fn the_answer_after_a_clean_run_is_the_exit_the_shadow_compared() {
+    fn a_crossing_exit_is_answered_at_once_with_the_exit_the_model_predicts() {
         static EPOCH: Epoch = Epoch::new();
         let world = CollisionWorld::new(&EPOCH);
-        let (mut g, entry) = fixture();
+        // The oracle: the model's prediction on an untouched fixture.
+        let (mut fresh, entry) = fixture();
+        let prediction = vector_parity::Prediction::gather(&entry, &mut fresh, &world).unwrap();
+        assert!(prediction.has_exit());
+        let (mut g, _) = fixture();
         let mut c = entry;
-        let (ret, prediction) = vector_parity::dispatch_vector(&mut c, &mut g, &world).unwrap();
-        let prediction = prediction.expect("a shadow prediction");
-        assert!(ret.is_none() && prediction.has_exit());
-        assert_eq!(c, entry, "the shadow call moved registers");
-        for _ in 0..CROSSING_CLEAN_RUN {
-            world.record_crossing(Entry::VectorTest, Ok(None), true);
-        }
         let (ret, none) = vector_parity::dispatch_vector(&mut c, &mut g, &world).unwrap();
-        assert!(none.is_none());
+        assert!(none.is_none(), "the first call is answered, not shadowed");
         assert_eq!(ret.unwrap().target_pc, RETURN);
         assert_eq!((c.esp, c.eax & 0xff), (SP + 0x14, 0));
         assert_eq!((c.ebx, c.esi, c.edi, c.ebp), (entry.ebx, entry.esi, entry.edi, entry.ebp));
@@ -489,16 +486,9 @@ mod tests {
         assert_eq!(prediction.compare_exit(&c, &g).unwrap(), None);
         assert_eq!(world.stats().vector.answered, 1);
         assert_eq!(world.stats().entries[Entry::VectorTest as usize].native, 1);
-        // A register the guest left differently closes the gate.
+        // The exit comparison sees a register left differently.
         let mut other = c;
         other.ecx ^= 1;
         assert!(prediction.compare_exit(&other, &g).unwrap().unwrap().starts_with("ECX"));
-        prediction.settle(&other, &g, &world);
-        let stats = world.stats().vector;
-        assert!(stats.fell_back && stats.mismatched == 1);
-        let (mut g, entry) = fixture();
-        let mut c = entry;
-        let (ret, prediction) = vector_parity::dispatch_vector(&mut c, &mut g, &world).unwrap();
-        assert!(ret.is_none() && prediction.is_some());
     }
 }
