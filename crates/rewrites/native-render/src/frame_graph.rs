@@ -253,10 +253,14 @@ impl<'a, 'g> Walk<'a, 'g> {
         let Some(c) = self.target(colour) else {
             unimplemented!("frame graph: stage {} with no colour bound", stage.name())
         };
-        // A colour-only bind (the overlay) gives its stages the scene's
-        // depth, which they leave unattached.
-        let depth = if depth == TargetRef::None { TargetRef::SceneDepth } else { depth };
-        let d = self.target(depth).expect("scene depth");
+        // A colour-only bind (the overlay, the ocean's reflection) gives
+        // its stages a depth of the colour's size: the scene's for the
+        // scene's colour.
+        let d = match depth {
+            TargetRef::None => self.targets.unbound_depth(self.gpu.device, c.size),
+            depth => self.target(depth).unwrap_or_else(|| unimplemented!("frame graph: stage {} with no depth", stage.name())),
+        };
+        let sampled = self.sampled(&*stage, (colour, depth));
         let attachments = ExternalAttachments {
             targets: (gfx::surface::SurfaceId(0), gfx::surface::SurfaceId(1)),
             uploads: self.arena.clone(),
@@ -267,7 +271,7 @@ impl<'a, 'g> Walk<'a, 'g> {
             depth: d.view.clone(),
             depth_format: d.format,
             size: c.size,
-            sampled: Vec::new(),
+            sampled,
             slots: Vec::new(),
             stages: [None, None, None, None],
             single_display: true,
@@ -284,6 +288,20 @@ impl<'a, 'g> Walk<'a, 'g> {
                 self.report.render_passes += encoded.passes as u64;
             }
         }
+    }
+
+    /// The levels `stage` samples ([`Stage::samples`]), in its order.
+    fn sampled(&mut self, stage: &dyn Stage, bound: (TargetRef, TargetRef)) -> Vec<Option<gfx::external::SampledLevel>> {
+        stage
+            .samples()
+            .into_iter()
+            .map(|r| {
+                if r != TargetRef::None && (r == bound.0 || r == bound.1) {
+                    unimplemented!("frame graph: stage {} samples {r:?}, its own attachment", stage.name());
+                }
+                self.target(r).map(|t| gfx::external::SampledLevel { view: t.view, size: t.size })
+            })
+            .collect()
     }
 
     fn draws(&mut self, c: &Target, d: &Target, draws: ExternalDraws, name: &str) {

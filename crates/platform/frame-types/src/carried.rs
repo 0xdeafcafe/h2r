@@ -157,12 +157,14 @@ impl SlotTracker {
 
 /// A target a carried op names. `SceneColour` and `SceneDepth` are the
 /// frame's own (the surfaces the guest presents and the depth bound with
-/// them); `Aux(n)` the frame's `n`th other surface, numbered in the order
-/// first named, described by [`Carried::aux`].
+/// them); `Game` a game target the frame graph keeps by its role;
+/// `Aux(n)` the frame's `n`th other surface, numbered in the order first
+/// named, described by [`Carried::aux`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TargetRef {
     SceneColour,
     SceneDepth,
+    Game(GameTarget),
     Aux(u16),
     /// No surface (a colour-only bind's depth).
     None,
@@ -185,6 +187,18 @@ pub enum TargetRole {
     /// The target whose header the game keeps at this global (the frame
     /// buffers' aliases and its own small targets, made at boot).
     Slot(u32),
+}
+
+/// A game target as a frame op names it: its role, and the shape the
+/// guest made its surface (`X_D3DPixelContainer`'s size, in guest
+/// pixels). The frame graph keeps one surface per role, made again when
+/// the shape changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct GameTarget {
+    pub role: TargetRole,
+    pub size: (u32, u32),
+    /// A depth surface (else colour).
+    pub depth: bool,
 }
 
 /// How a carried op samples a target on the GPU, in order.

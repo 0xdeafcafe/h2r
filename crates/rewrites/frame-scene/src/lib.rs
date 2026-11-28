@@ -37,7 +37,7 @@ pub use frame_types::{camera, carried};
 pub use builder::{BuildError, FreeList, InstanceInput, SceneBuilder};
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use carried::{
-    AuxTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot,
+    AuxTarget, GameTarget, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot,
     SlotAt, SlotEvent, SlotTracker, TargetRef, TargetRole, TargetSample,
 };
 pub use decorator::{DecoratorCounts, DecoratorDraw, DecoratorInstance};

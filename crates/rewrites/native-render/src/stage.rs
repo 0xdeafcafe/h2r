@@ -61,6 +61,14 @@ pub trait Stage: Send {
         None
     }
 
+    /// The targets the stage samples in place, in the order
+    /// `ExternalAttachments::sampled` hands them to [`Stage::record`]
+    /// (`None` there for [`TargetRef::None`]). A target bound as the
+    /// stage's attachment panics by name.
+    fn samples(&self) -> Vec<TargetRef> {
+        Vec::new()
+    }
+
     /// The stage's work on `t` for `view`: packets appended to the open
     /// pass, or commands encoded on their own.
     fn record(&mut self, t: &ExternalAttachments, view: &ViewInputs) -> StageWork;
