@@ -7,7 +7,6 @@ pub mod models;
 mod residency;
 mod scene;
 mod tiles;
-pub(crate) mod typed;
 pub mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
@@ -1230,21 +1229,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         draw: render_bridge::native_lights::chosen::first_person::FirstPersonDraw<'_>,
     ) -> usize {
         self.first_person_lights(mem, draw)
-    }
-
-    fn draw_typed(
-        &self,
-        mem: &mut dyn GuestMemory,
-        batch: &render_bridge::native_lights::TypedPasses<'_>,
-    ) -> bool {
-        self.refresh_edits(mem);
-        let result = self.typed(mem, batch);
-        let ok = result.is_ok();
-        let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-        for msg in tally.count(result) {
-            eprintln!("{msg}");
-        }
-        ok
     }
 
     fn draw_shadow_alone(

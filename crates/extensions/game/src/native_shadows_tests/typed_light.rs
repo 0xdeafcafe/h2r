@@ -6,11 +6,10 @@ use d3d::{
     Backend, ExternalPassRequest, ExternalPlan, ExternalSurfaces, GfxBackend, TargetCopy,
     backend::{ExternalAttachments, ExternalDraws},
 };
-use frame_scene::{GroupSite, LightConstants, LightGroup, LightStep, LightTarget};
+use frame_scene::{GroupSite, LightConstants, LightGroup};
 use gfx::surface::SurfaceId;
 use native_render::{
     light_gpu::{LightDraw, LightGpu, LightSet, LightTarget as GpuTarget},
-    light_graph::Pass,
     light_look::{LightProgram, LightStage},
     program::ViewInputs,
     world::WorldVertex,
@@ -174,16 +173,6 @@ pub(super) fn issue(
     missing_specular_indices: bool,
 ) -> bool {
     let site = GroupSite::Light;
-    let steps = [11, 14, 12, 13].map(|layer| LightStep {
-        layer,
-        stencil: Some(0),
-        target: if layer == 14 {
-            LightTarget::Target(1)
-        } else {
-            LightTarget::View
-        },
-        draws: matches!(layer, 12 | 13),
-    });
     let groups = [12, 13].map(|layer| LightGroup {
         light: 1,
         layer,
@@ -206,22 +195,13 @@ pub(super) fn issue(
         gel: None,
         animated_gel: false,
     };
-    let pass = Pass::Light {
-        site,
-        steps: &steps,
-        additional: None,
-        constants: &constants,
-        scissor: Some(SCISSOR),
-        projection: None,
-    };
-    let run = crate::native_lights_glue::typed::view_run(pass, &[&groups[0], &groups[1]]).unwrap();
     let (device, queue) = (&backend.ctx.device, &backend.ctx.queue);
     let set = LightSet::new(device, queue, None, None);
     let color = backend.store.get(surfaces.color).unwrap().wgpu_format();
     let depth = backend.store.get(surfaces.depth).unwrap().wgpu_format();
     let mut held = Vec::new();
-    for i in run.groups {
-        let layer = groups[i].layer;
+    for group in &groups {
+        let layer = group.layer;
         let program = Arc::new(program(layer));
         let mut gpu = LightGpu::new(
             device,
@@ -259,8 +239,8 @@ pub(super) fn issue(
     let run = PacketRun {
         set,
         groups: held,
-        constants: *run.constants,
-        scissor: run.scissor.unwrap(),
+        constants,
+        scissor: SCISSOR,
         vertices: buffer(
             wgpu::BufferUsages::VERTEX,
             &[0; 3 * std::mem::size_of::<WorldVertex>()],

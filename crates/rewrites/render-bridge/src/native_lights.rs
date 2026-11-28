@@ -326,29 +326,8 @@ pub struct ShadowAlone<'a> {
     pub light: Option<LightConstants>,
 }
 
-/// A single invocation's ordered passes and the corresponding whole groups.
-/// Both the target and view belong to this frame.
-pub struct TypedPasses<'a> {
-    pub graph: native_render::light_graph::Pass<'a>,
-    /// Guest-visible stores journaled together with the device tail.
-    pub writes: &'a engine::render::light_gather::Writes,
-    /// The programmable depth range restored after this invocation.
-    pub clip: [u32; 2],
-    /// The image's simple render-state method for a changed clip mode.
-    pub clip_header: Option<u32>,
-    pub groups: &'a [SceneGroup],
-    pub view_target: [u32; 8],
-    pub view: u32,
-}
-
 pub trait Host: Send + Sync {
     fn retire_map(&self) {}
-
-    /// Reserve the entire sequence on every copy before issuing any of it.
-    /// A refusal leaves the caller at the start of its ordinary passes.
-    fn draw_typed(&self, _mem: &mut dyn GuestMemory, _batch: &TypedPasses<'_>) -> bool {
-        false
-    }
 
     /// Plan a sorted prefix of one layer. The handlers still emit their
     /// D3D packets so each native draw can fall back in the same queue
