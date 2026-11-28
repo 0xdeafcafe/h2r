@@ -30,6 +30,9 @@ scene-extract = { path = "../scene-extract", optional = true }
 frame-types = { path = "../../platform/frame-types" }
 # The sim's visual effect parts, put in each scene (docs/engine/effects-parts.md).
 sim-effects.workspace = true
+# The fog effect's exact SSE and x87 (src/fog_effect.rs).
+simd.workspace = true
+x87.workspace = true
 
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
