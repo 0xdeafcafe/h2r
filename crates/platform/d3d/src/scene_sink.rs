@@ -43,10 +43,10 @@ struct OpenRun {
 pub use replay::{ReplayFrame, ReplayOp, ReplaySample, ReplayTexture, RetainedExternal, SinkTexture};
 use replay::{Origin, Recorder};
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, SlotAt, TargetRef, TargetSample};
+use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, Slot, SlotAt, TargetRef, TargetSample};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
@@ -139,6 +139,38 @@ pub fn counters() -> Vec<(String, u64)> {
         out.push((format!("scene_readback_{}", kind.name()), n));
     }
     out
+}
+
+/// The open frame's carried slots: a bit per [`Slot`] index, and
+/// [`UNTRACKED`] for a write made while no slot was declared. Cleared at
+/// each present.
+static OPEN: AtomicU32 = AtomicU32::new(0);
+const UNTRACKED: u32 = 1 << 31;
+
+/// What the open frame (since the last present) filed: the publish's test
+/// (docs/graphics/retire-d3d-display.md, "The final display").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenFrame {
+    /// No guest op: every slot draws from the scene.
+    Scene,
+    /// The first slot, in the frame's order, with a guest op.
+    Carried(Slot),
+    /// A guest write while the frame step declared no slot.
+    Untracked,
+}
+
+pub fn open_frame() -> OpenFrame {
+    decode_open(OPEN.load(Ordering::Relaxed))
+}
+
+fn decode_open(open: u32) -> OpenFrame {
+    if open & UNTRACKED != 0 {
+        return OpenFrame::Untracked;
+    }
+    match Slot::ALL.into_iter().find(|s| open & (1 << s.index()) != 0) {
+        Some(slot) => OpenFrame::Carried(slot),
+        None => OpenFrame::Scene,
+    }
 }
 
 /// The last recorded frame's carried part, counted.
@@ -449,9 +481,17 @@ impl<B: Backend> SceneSink<B> {
     fn write_slot(&mut self) -> Option<SlotAt> {
         let at = self.at();
         if at.is_none() {
+            OPEN.fetch_or(UNTRACKED, Ordering::Relaxed);
             self.untracked_write();
         }
         at
+    }
+
+    /// Files a guest op at `at` in the frame's carried part, and marks its
+    /// slot carried in the open frame ([`open_frame`]).
+    fn file(&mut self, at: SlotAt, op: GuestOp<KeptDraw>) {
+        OPEN.fetch_or(1 << at.slot.index(), Ordering::Relaxed);
+        self.frame.push(at, op);
     }
 
     fn refuse_replay(&mut self, cause: &'static str) {
@@ -520,7 +560,7 @@ impl<B: Backend> SceneSink<B> {
     fn bind(&mut self, at: SlotAt, colour: B::Surface, depth: Option<B::Surface>) {
         let (c, d) = self.attachments(colour, depth);
         if self.bound != Some((c, d, at)) {
-            self.frame.push(at, GuestOp::Bind { colour: c, depth: d });
+            self.file(at, GuestOp::Bind { colour: c, depth: d });
             self.bound = Some((c, d, at));
         }
     }
@@ -529,7 +569,7 @@ impl<B: Backend> SceneSink<B> {
         let Some(at) = self.write_slot() else { return };
         self.bind(at, colour, depth);
         let kept = self.keep.then(|| Box::new(draw.clone()));
-        self.frame.push(at, GuestOp::Draw(kept));
+        self.file(at, GuestOp::Draw(kept));
     }
 
     fn replay_draw(
@@ -592,13 +632,13 @@ impl<B: Backend> SceneSink<B> {
     fn record_clear(&mut self, colour: B::Surface, depth: Option<B::Surface>, rects: bool) {
         let Some(at) = self.write_slot() else { return };
         let (c, d) = self.attachments(colour, depth);
-        self.frame.push(at, GuestOp::Clear { colour: c, depth: d, rects });
+        self.file(at, GuestOp::Clear { colour: c, depth: d, rects });
     }
 
     fn record_sample(&mut self, of: B::Surface, how: TargetSample) {
         let Some(at) = self.at() else { return };
         let of = self.target(of);
-        self.frame.push(at, GuestOp::Sample { of, how });
+        self.file(at, GuestOp::Sample { of, how });
     }
 
     fn sample_texture(&mut self, inner: B::Texture, surface: B::Surface, how: TargetSample, kind: impl FnOnce() -> ReplaySample) -> SinkTexture<B::Texture> {
@@ -634,6 +674,7 @@ impl<B: Backend> SceneSink<B> {
 
     fn presented(&mut self, surface: B::Surface, flags: u32, gamma: Option<&[u8; 768]>) {
         self.presents += 1;
+        OPEN.store(0, Ordering::Relaxed);
         let entered_game_view = (self.take_game_view)();
         if self.replay.is_some() && (entered_game_view || self.at().is_some() || !self.frame.ops.is_empty()) {
             let shown = self.replay_target(surface);
@@ -877,7 +918,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         let copied = self.inner.copy_surface(src, dst)?;
         if copied && let Some(at) = self.write_slot() {
             let (from, to) = (self.target(src), self.target(dst));
-            self.frame.push(at, GuestOp::Copy { from, to });
+            self.file(at, GuestOp::Copy { from, to });
             if self.replay.is_some() {
                 let (from, to) = (self.replay_target(src), self.replay_target(dst));
                 self.replay_op(at, ReplayOp::Copy { from, to });
@@ -889,7 +930,7 @@ impl<B: Backend> Backend for SceneSink<B> {
         let written = self.inner.write_surface(surface, desc, bytes)?;
         if written && let Some(at) = self.write_slot() {
             let to = self.target(surface);
-            self.frame.push(at, GuestOp::Upload { to });
+            self.file(at, GuestOp::Upload { to });
             if self.replay.is_some() {
                 let to = self.replay_target(surface);
                 self.replay_op(at, ReplayOp::Upload { to, desc: desc.clone(), bytes: Arc::from(bytes) });
@@ -1290,5 +1331,14 @@ mod tests {
         assert_eq!(s.last_frame().ops.len(), 1);
         assert!(matches!(s.last_frame().ops[0].op, GuestOp::Clear { colour: TargetRef::Aux(0), .. }));
         assert_eq!(s.last_frame().aux[0].width, 32);
+    }
+
+    #[test]
+    fn the_open_frame_names_its_first_carried_slot_and_an_untracked_write_wins() {
+        assert_eq!(decode_open(0), OpenFrame::Scene);
+        let bit = |s: Slot| 1u32 << s.index();
+        assert_eq!(decode_open(bit(Slot::Overlay)), OpenFrame::Carried(Slot::Overlay));
+        assert_eq!(decode_open(bit(Slot::Overlay) | bit(Slot::AfterLights)), OpenFrame::Carried(Slot::AfterLights), "the frame's order");
+        assert_eq!(decode_open(bit(Slot::Opaque) | UNTRACKED), OpenFrame::Untracked);
     }
 }

@@ -16,8 +16,9 @@
 //! [`next`] is that order as data; [`RenderFrame`] runs it, each step a
 //! guest call. Nothing here draws: the steps' own replacements (the views'
 //! stages, the overlay's producers, the movie's display) are where the
-//! frame goes native. The present stays the guest's until the publish
-//! replaces `d3d`'s `Swap`.
+//! frame goes native. At the present, [`publish`] shows a frame whose
+//! every slot drew from the scene in place of the guest's present, and
+//! counts every frame that keeps it by name.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -27,6 +28,8 @@ use engine::points;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+
+pub mod publish;
 
 pub const ID: &str = "render-frame";
 
@@ -129,7 +132,10 @@ pub fn idle(a: &Addrs, g: &dyn GuestMemory) -> Result<bool, MemFault> {
 pub struct Stats {
     pub views: AtomicU64,
     pub outside_view: AtomicU64,
+    /// The guest's presents run.
     pub presents: AtomicU64,
+    /// Frames shown from the scene, the guest's present skipped.
+    pub published: AtomicU64,
     pub loading: AtomicU64,
 }
 
@@ -139,17 +145,34 @@ pub struct Stats {
 pub struct RenderFrame {
     addrs: Addrs,
     stats: Arc<Stats>,
+    /// The host's publish; `None` asks [`publish::installed`] each frame.
+    publish: Option<Arc<dyn publish::Publish>>,
 }
 
 impl Default for RenderFrame {
     fn default() -> Self {
-        RenderFrame { addrs: Addrs::HALO2, stats: Arc::default() }
+        RenderFrame { addrs: Addrs::HALO2, stats: Arc::default(), publish: None }
     }
 }
 
 impl RenderFrame {
     pub fn stats(&self) -> Arc<Stats> {
         Arc::clone(&self.stats)
+    }
+
+    /// Publishes through `publish` rather than the installed host's.
+    pub fn with_publish(mut self, publish: Arc<dyn publish::Publish>) -> Self {
+        self.publish = Some(publish);
+        self
+    }
+}
+
+/// The step after the frame wait: [`Step::Presented`] when the frame was
+/// shown from the scene, so the guest's present is not called.
+pub fn after_wait(step: Step, outcome: Option<publish::Outcome>) -> Step {
+    match (step, outcome) {
+        (Step::Waited { present: true }, Some(publish::Outcome::Native)) => Step::Presented,
+        _ => step,
     }
 }
 
@@ -192,6 +215,17 @@ fn fault(f: MemFault) -> GuestFault {
 fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
+    let outcome = match step {
+        Step::Waited { present: true } => {
+            let host = me.publish.clone().or_else(publish::installed);
+            Some(publish::present(&publish::Addrs::HALO2, host.as_deref(), &mut *mem).map_err(fault)?)
+        }
+        _ => None,
+    };
+    if outcome == Some(publish::Outcome::Native) {
+        me.stats.published.fetch_add(1, Ordering::Relaxed);
+    }
+    let step = after_wait(step, outcome);
     let reads = match step {
         Step::Start => Reads { world: world(&me.addrs, &*mem).map_err(fault)?, idle: false },
         Step::Viewed => Reads { world: false, idle: idle(&me.addrs, &*mem).map_err(fault)? },
@@ -240,9 +274,15 @@ mod tests {
     const A: Addrs = Addrs::HALO2;
 
     fn steps(world: bool, skip: u8, idle: bool) -> Vec<u32> {
+        steps_published(world, skip, idle, None)
+    }
+
+    /// The calls, with the publish answering `outcome` at the present.
+    fn steps_published(world: bool, skip: u8, idle: bool, outcome: Option<publish::Outcome>) -> Vec<u32> {
         let mut out = Vec::new();
         let mut step = Step::Start;
         loop {
+            step = after_wait(step, outcome);
             let (action, present) = next(&A, step, Reads { world, idle });
             let Action::Call { target, args, kind } = action else { return out };
             out.push(target);
@@ -264,6 +304,26 @@ mod tests {
         assert_eq!(steps(true, 1, true), [0x0006_8290, 0x0022_32a0, 0x0012_b2e0, 0x0001_3f10], "the UI's world skip");
         assert_eq!(steps(false, 0, true), [0x0022_32a0, 0x0012_b2e0, 0x0001_3f10], "no world: the skip is not asked");
         assert_eq!(steps(true, 0, false), [0x0006_8290, 0x0022_34e0, 0x0012_b2e0], "loading: waits, does not present");
+    }
+
+    #[test]
+    fn a_published_frame_skips_the_guests_present_and_a_kept_one_calls_it() {
+        use publish::{Kept, Outcome};
+        assert_eq!(
+            steps_published(true, 0, true, Some(Outcome::Native)),
+            [0x0006_8290, 0x0022_34e0, 0x0012_b2e0],
+            "shown from the scene: the frame wait, no 0x00013f10"
+        );
+        assert_eq!(
+            steps_published(true, 0, true, Some(Outcome::Kept(Kept::Slot("opaque")))),
+            [0x0006_8290, 0x0022_34e0, 0x0012_b2e0, 0x0001_3f10],
+            "a carried slot keeps the guest's present"
+        );
+        assert_eq!(
+            steps_published(true, 0, false, Some(Outcome::Native)),
+            [0x0006_8290, 0x0022_34e0, 0x0012_b2e0],
+            "loading presents neither way"
+        );
     }
 
     #[test]

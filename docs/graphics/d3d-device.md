@@ -319,3 +319,6 @@ Each `Swap` passes the current ramp to the
 frame handoff, which applies it per RGB channel when copying the presented
 surface. The unmodified surface remains available for guest reads. The
 ignored `gamma_ramp_conventions_in_the_image` checks the convention.
+A frame the frame step publishes (`Device::publish`) passes the ramp the
+frame step read from the miniport instead
+([retire-d3d-display.md](retire-d3d-display.md#the-final-display)).

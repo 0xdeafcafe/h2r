@@ -1804,6 +1804,10 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         // render.residual's producer boundaries drain the same device
         // (render_bridge::residual_census::Drain).
         render_bridge::residual_census::set_drain(drain.clone());
+        // The frame step's publish (docs/graphics/retire-d3d-display.md,
+        // "The final display") reads the sink's open frame and presents
+        // through the same device.
+        render_bridge::render_frame::publish::set(drain.clone());
         render_bridge::carried_slots::set_drain(drain);
     }
     let watch = subscribe_write_barrier(rt)?;
@@ -1928,19 +1932,50 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::carried_slots::Dr
     }
 
     fn drain(&self, mem: &mut dyn engine::memory::GuestMemory) {
-        struct Mem<'a>(&'a mut dyn engine::memory::GuestMemory);
-        impl d3d::GuestMemory for Mem<'_> {
-            fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
-                self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
-            }
-            fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
-                self.0.write(addr, data).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
-            }
-        }
         // A latched fault answers every later entry; nothing to add here.
         if let Ok(mut d) = self.device.lock() {
-            let _ = d.sync_push_buffer(&mut Mem(mem));
+            let _ = d.sync_push_buffer(&mut SinkMem(mem));
         }
+    }
+}
+
+/// The engine's guest memory as the device reads it.
+#[cfg(feature = "desktop-runtime")]
+struct SinkMem<'a>(&'a mut dyn engine::memory::GuestMemory);
+
+#[cfg(feature = "desktop-runtime")]
+impl d3d::GuestMemory for SinkMem<'_> {
+    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+        self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
+        self.0.write(addr, data).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
+    }
+}
+
+/// The publish's host: the sink's open frame, after the device has run
+/// what game code wrote, and the device's present of a frame drawn from
+/// the scene (`d3d::Device::publish`).
+#[cfg(feature = "desktop-runtime")]
+impl<B: d3d::backend::Backend + Send + 'static> render_bridge::render_frame::publish::Publish for SinkDrain<B> {
+    fn open(&self, mem: &mut dyn engine::memory::GuestMemory) -> render_bridge::render_frame::publish::Open {
+        use d3d::scene_sink::OpenFrame;
+        use render_bridge::render_frame::publish::Open;
+        render_bridge::carried_slots::Drain::drain(self, mem);
+        match d3d::scene_sink::open_frame() {
+            OpenFrame::Scene => Open::Scene,
+            OpenFrame::Carried(slot) => Open::Carried(slot.name()),
+            OpenFrame::Untracked => Open::Untracked,
+        }
+    }
+
+    fn present(
+        &self,
+        mem: &mut dyn engine::memory::GuestMemory,
+        gamma: Option<&[u8; render_bridge::render_frame::publish::RAMP_BYTES]>,
+    ) -> Result<(), String> {
+        let mut d = self.device.lock().map_err(|_| "the device lock is poisoned".to_owned())?;
+        d.publish(&mut SinkMem(mem), gamma).map(|_| ()).map_err(|e| e.to_string())
     }
 }
 

@@ -329,6 +329,43 @@ impl<B: Backend> Device<B> {
         self.display.per_swap = n;
     }
 
+    /// The frame step's publish (docs/graphics/retire-d3d-display.md, "The
+    /// final display"): a frame whose every slot drew from the scene is
+    /// shown with neither the guest's present `0x00013f10` nor `Swap`. The
+    /// back buffer the scene drew into goes to the backend with the frame
+    /// step's gamma ramp (`gamma`, not [`Device::gamma_ramp`]), and the
+    /// swap is counted, so the next vertical blank's record carries the
+    /// swap count and [`VBLANK_SWAPDONE`] as after a `Swap`. The
+    /// frame-buffer headers do not rotate and no fence is set: no guest op
+    /// drew into the frame, and the guest's next frame draws into the same
+    /// back buffer. Returns the swap count.
+    pub fn publish(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        gamma: Option<&[u8; GAMMA_RAMP_BYTES]>,
+    ) -> Result<u32, D3dError> {
+        const E: &str = "the frame step's publish";
+        self.live(E)?;
+        crate::residual::present();
+        self.sync_push_buffer(mem)?;
+        if self.immediate.is_open() {
+            return Err(D3dError::invalid(E, "publish inside Begin/End"));
+        }
+        self.flush_at_sync(mem)?;
+        self.count_swap(mem)?;
+        let shown = self.swap.as_ref().expect("created").back[0];
+        self.present_cameras.capture(shown);
+        self.present_cameras.finish(shown);
+        self.frame_snaps.present();
+        let metadata = crate::present_camera::Present::Guest {
+            image: self.present_cameras.get(shown),
+            reference: false,
+        };
+        crate::present_camera::with(Some(metadata), || self.backend.present_with_gamma(shown, 5, gamma))
+            .map_err(D3dError::Backend)?;
+        Ok(self.swap_count)
+    }
+
     /// The vertical blanks queued by `Swap`, oldest first.
     pub fn take_pending_vblanks(&mut self) -> Vec<VBlank> {
         std::mem::take(&mut self.display.pending)

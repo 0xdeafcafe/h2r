@@ -688,6 +688,38 @@ fn the_gamma_ramp_is_kept() {
     assert!(err.contains("device + 0x1C28"), "{err}");
 }
 
+/// The frame step's publish (docs/graphics/retire-d3d-display.md, "The
+/// final display"): the back buffer with the frame step's ramp, not the
+/// device's, and a counted swap the next vertical blank reports.
+#[test]
+fn a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap() {
+    let (mut d, mut m) = rec();
+    let loaded: Vec<u8> = (0..768u32).map(|i| (i * 7) as u8).collect();
+    m.write(MISC + 0x9000, &loaded).unwrap();
+    let r = Regs {
+        eax: DEV + d3d::device::MINIPORT,
+        edx: MISC + 0x9000,
+        ..Regs::default()
+    };
+    call(&mut d, &mut m, 0x3ff5c6, r, &[]).unwrap();
+    let ramp: [u8; 768] = std::array::from_fn(|i| (i * 5) as u8);
+    let before = d.swap_count();
+    let headers = (m.read_u32(DEV + f::RENDER_TARGET).unwrap(), m.read_u32(DEV + f::BACK_BUFFER).unwrap());
+    assert_eq!(d.publish(&mut m, Some(&ramp)).unwrap(), before + 1);
+    assert_eq!(&d.backend.present_gamma.as_ref().unwrap()[..], &ramp[..]);
+    assert!(matches!(d.backend.calls.last(), Some(Recorded::Present { flags: 5, .. })));
+    assert_eq!(m.read_u32(DEV + f::SWAP_COUNT).unwrap(), before + 1);
+    assert_eq!(
+        (m.read_u32(DEV + f::RENDER_TARGET).unwrap(), m.read_u32(DEV + f::BACK_BUFFER).unwrap()),
+        headers,
+        "no flip: the next frame draws into the same back buffer"
+    );
+    m.write_u32(DEV + f::VBLANK_CALLBACK, 0x003F_0100).unwrap();
+    let v = d.vblank(&m).unwrap().unwrap();
+    assert_eq!(v.record[1..], [before + 1, d3d::device::VBLANK_SWAPDONE]);
+    assert_eq!(d.vblank(&m).unwrap().unwrap().record[2], 0, "SWAPDONE once");
+}
+
 // Through the runner ------------------------------------------------------------
 
 mod runner {
