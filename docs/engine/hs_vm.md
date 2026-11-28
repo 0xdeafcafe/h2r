@@ -127,7 +127,7 @@ the lifted execute `0x00209850`, counted in `hs_update::Stats::executed`.
 
 | Step | What the update does |
 |---|---|
-| 1 | reads `game_time + 8` once |
+| 1 | returns at once, with no tail call, if scripts are off (`[0x4f9388]` 0); else reads `game_time + 8` once |
 | 2 | walks occupied slots in order with `data_next_index`, which re-reads the high-water mark |
 | 3 | runs every thread that is not category 4 and has `0 <= wake <= now` |
 | 4 | stops if the scheduler is disabled, then tail-calls `0x001deed0` (`Engine::after_update`) |
