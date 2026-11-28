@@ -274,19 +274,6 @@ impl Host for Targets {
         constant(mem, r)
     }
 
-    /// Reached only when the put is at the push buffer's limit: nothing
-    /// here advances it ([`Self::push_viewport`]), so a guest writer
-    /// filled it, and with no device nothing drains it.
-    fn make_space(&self, mem: &mut dyn GuestMemory, _: u32, _: u32) -> Option<u32> {
-        let device = mem.u32(render_bridge::native_targets::DEVICE).ok();
-        unimplemented!("targets: push buffer full at device {device:x?}: a guest writer filled it and nothing drains it")
-    }
-
-    /// The viewport fragment's methods have no reader: the put stays.
-    fn push_viewport(&self, _: &mut dyn GuestMemory, put: u32, _: u32) -> Option<u32> {
-        Some(put)
-    }
-
     fn surface_size(&self, mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
         // `X_D3DPixelContainer`: `Format` at +0x0c, `Size` at +0x10.
         let format = mem.u32(header.wrapping_add(0x0c)).ok()?;
@@ -483,13 +470,6 @@ mod tests {
         // An index past the headers is no cached palette.
         m.put_u32(STAGE_PALETTES + 12, 2);
         assert_eq!(stage_palette_header(&m, 3), Some(0x0050_0000));
-    }
-
-    #[test]
-    fn the_viewport_push_writes_nothing_and_keeps_the_put() {
-        let t = Targets { bound: Mutex::new([0; 8]) };
-        let mut m = FakeGuest::new();
-        assert_eq!(t.push_viewport(&mut m, 0x1000, 0x0040_4fe0), Some(0x1000));
     }
 
     #[test]

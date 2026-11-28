@@ -21,7 +21,8 @@
 //!   `0x00407498 + 4·state`;
 //! - below `0x88`: deferred: the state's dirty bit (`0x0043e4d0`) into
 //!   `0x00407490`, and the shadow;
-//! - `0x88`: the device's `+0x790`, dirty bit `0x4000`, and `0x004076b8`;
+//! - `0x88`: dirty bit `0x4000` and `0x004076b8` (the body's copy to the
+//!   device's `+0x790` only fed D3D; the port makes none);
 //! - `0x89` to `0xa5`: the state's own stdcall setter (`setter`).
 //!
 //! There is no comparison with the shadow: a value D3D already holds is
@@ -50,8 +51,11 @@ pub const COLOUR: u32 = 0x0013_1ed0;
 pub const SHADOW: u32 = 0x0040_7498;
 /// D3D's dirty mask for the deferred states.
 pub const DIRTY: u32 = 0x0040_7490;
-/// The device pointer (state `0x88` lands at `+0x790`).
+/// The guest D3D device pointer. Nothing here reads it; its last readers
+/// are render-bridge's `native_world::opaque_material` uploads, which
+/// still push to the guest device.
 pub const DEVICE: u32 = 0x0040_7488;
+/// State `0x88`'s mirror.
 pub const STATE_88: u32 = 0x0040_76b8;
 /// Push headers of the Simple states, dirty bits of the deferred ones.
 pub const HEADERS: u32 = 0x0043_e6f0;
@@ -345,8 +349,6 @@ impl RenderStates {
             return self.next(r, m);
         }
         if r.edi == 0x88 {
-            r.ecx = m.u32(DEVICE)?;
-            m.set_u32(r.ecx.wrapping_add(0x790), r.esi)?;
             return self.state_88_tail(r, m, r.esi);
         }
         self.setter_merged(r, m)
@@ -367,8 +369,6 @@ impl RenderStates {
             return self.next(r, m);
         }
         if r.edi == 0x88 {
-            r.edx = m.u32(DEVICE)?;
-            m.set_u32(r.edx.wrapping_add(0x790), r.esi)?;
             return self.state_88_tail(r, m, r.esi);
         }
         self.setter_merged(r, m)
@@ -425,8 +425,6 @@ impl RenderStates {
         }
         if state == 0x88 {
             r.eax = m.u32(local)?;
-            r.ecx = m.u32(DEVICE)?;
-            m.set_u32(r.ecx.wrapping_add(0x790), r.eax)?;
             let d = m.u32(DIRTY)? | r.edx;
             m.set_u32(DIRTY, d)?;
             m.set_u32(STATE_88, r.eax)?;

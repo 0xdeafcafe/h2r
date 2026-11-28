@@ -13,12 +13,9 @@ const IMAGES: u32 = 0x0050_6c00;
 const IMPL: u32 = 0x0050_6a00;
 const SCRATCH: u32 = 0x0050_9000;
 const BSP_AT: u32 = 0x0050_5000;
-const DEVICE_AT: u32 = 0x004f_8000;
 const STREAM_AT: u32 = 0x0050_7100;
 const BUFFER: u32 = 0x0050_7200;
 const VERTEX_TYPE: u32 = 5;
-/// The device pointer the clear's push reads.
-const DEVICE: u32 = 0x0040_7488;
 
 /// A definition whose shader `1` reaches implementation flags `flags`
 /// (template `2`, implementation `3`), one bitmap (`4`) of two images.
@@ -59,9 +56,6 @@ fn mem(flags: u32) -> FlatMemory {
     set(STREAM_AT + 8, BUFFER);
     set(STREAM_AT + 0x10, 0x40);
     set(BUFFER + 4, 0x0012_3000);
-    set(DEVICE, DEVICE_AT);
-    set(DEVICE_AT, 0x100);
-    set(DEVICE_AT + 4, 0x1000);
     set(0x0045_dbc0, 1f32.to_bits());
     // The structure upload's inputs (engine::render_loop::structure_parameters).
     set(0x0046_87b0, 0x0050_7300);

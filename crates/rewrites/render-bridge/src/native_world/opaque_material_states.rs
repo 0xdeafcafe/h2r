@@ -4,7 +4,7 @@
 
 use engine::entry::{Cx, EntryError, GuestCall};
 use engine::memory::{GuestMemory, MemFault};
-use engine::render_loop::states::{self, ALPHA_SCALE, DEFS, DEVICE, DIRTY, HEADERS, MASKS, SHADOW, SIMPLE, STATE_88};
+use engine::render_loop::states::{self, ALPHA_SCALE, DEFS, DIRTY, HEADERS, MASKS, SHADOW, SIMPLE, STATE_88};
 
 const SAMPLER_DEFS: u32 = 0x0046_703c;
 const SAMPLER_SHADOW: u32 = 0x0040_4dd0;
@@ -36,9 +36,9 @@ pub(super) async fn render_state(cx: &Cx, slot: u32, value: u32) -> Result<(), E
             mark(m, bits)?;
             m.set_u32(SHADOW + 4 * slot, value)
         })?,
+        // The body's device copy (`[0x00407488] + 0x790`) only fed D3D,
+        // and no device exists.
         0x88 => cx.write(|m| {
-            let device = m.u32(DEVICE)?;
-            m.set_u32(device.wrapping_add(0x790), value)?;
             mark(m, 0x4000)?;
             m.set_u32(STATE_88, value)
         })?,
@@ -228,12 +228,9 @@ mod tests {
     }
 
     #[test]
-    fn render_state_writes_the_device_and_dirty_bit_before_a_later_setter() {
+    fn render_state_writes_the_mirror_and_dirty_bit_before_a_later_setter() {
         let mut m = scene(0, 3);
-        let device = 0xa000;
-        m.put_u32(DEVICE, device)
-            .map(device + 0x790, 4)
-            .map(STATE_88, 4)
+        m.map(STATE_88, 4)
             .put_u16(DEFS, 0x88)
             .put_u8(DEFS + 3, 2)
             .put(ENTRIES, &[0, 1, 0, 0])
@@ -255,7 +252,6 @@ mod tests {
         };
         let result = run(&body, m, Regs::default(), |call, mem| {
             assert_eq!(mem.u32(STATE_88), Ok(2));
-            assert_eq!(mem.u32(device + 0x790), Ok(2));
             assert_eq!(mem.u32(DIRTY), Ok(0x8000_4000));
             assert_eq!(mem.u32(SHADOW + 16), Ok(if call.target == SIMPLE { 99 } else { 96 }));
             Regs::default()

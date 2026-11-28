@@ -43,20 +43,12 @@ pub const CLEAR_PRELUDE_TARGET: u32 = 0x0048_58b8;
 
 /// The finish's globals (Code, `0x00013cd0..0x00013d43`): the engine's
 /// four requested textures, the four it last committed (`0x0001cf50`
-/// sets a stage whose two differ), the word it sets to -1, the word it
-/// clears, and the device pointer.
+/// sets a stage whose two differ), the word it sets to -1 and the word it
+/// clears.
 pub const STAGE_REQUESTED: u32 = 0x0051_f3d8;
 pub const STAGE_COMMITTED: u32 = 0x0051_f3c8;
 pub const FINISH_UNSET: u32 = 0x0046_7004;
 pub const FINISH_CLEARED: u32 = 0x0040_8338;
-pub const DEVICE: u32 = 0x0040_7488;
-/// The guest device's index buffer and base vertex (`BASE_VERTEX`).
-pub const DEVICE_INDICES: u32 = 0x7a0;
-pub const DEVICE_BASE_VERTEX: u32 = 0x1c;
-/// A resource's device references: `+0x80000` each, live while any bit
-/// of [`LIVE_REFS`] is set.
-pub const DEVICE_REF: u32 = 0x0008_0000;
-pub const LIVE_REFS: u32 = 0x0078_ffff;
 
 /// Which bind the target select makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,20 +150,12 @@ pub trait Host: Send + Sync {
     fn constant(&self, _mem: &dyn GuestMemory, _r: usize) -> Option<[u32; 4]> {
         None
     }
-    /// `D3D_MakeRequestedSpace(minimum, requested)`: the new put.
-    fn make_space(&self, _mem: &mut dyn GuestMemory, _minimum: u32, _requested: u32) -> Option<u32> {
-        None
-    }
-    /// The viewport push fragment `0x003f6190` at `put`: the new put.
-    fn push_viewport(&self, _mem: &mut dyn GuestMemory, _put: u32, _device: u32) -> Option<u32> {
-        None
-    }
-    /// `D3DDevice_SetViewport(viewport)`. `false`: refused.
     /// The width and height of the surface at `header`, as
     /// `D3DSurface_GetDesc` gives them; `None` when it does not read.
     fn surface_size(&self, _mem: &dyn GuestMemory, _header: u32) -> Option<(u32, u32)> {
         None
     }
+    /// `D3DDevice_SetViewport(viewport)`. `false`: refused.
     fn viewport(&self, _mem: &mut dyn GuestMemory, _viewport: u32) -> bool {
         false
     }
@@ -343,17 +327,15 @@ pub fn cut_clear(mem: &mut dyn GuestMemory, host: &dyn Host, flags: u32, colour:
     Ok(())
 }
 
-/// The device's viewport (`x, y, width, height, min_z, max_z`).
-pub const DEVICE_VIEWPORT: u32 = 0xee0;
 /// `1.0f`, the guest's constant.
 const ONE: u32 = 0x0045_dbc0;
 
 /// The clear's prelude `0x00014ac0` (Code `0x00014ac0..0x00014b57`): the
-/// whole 640 x 480 screen's colour cleared to black, the device's viewport
-/// set to it and back.
+/// whole 640 x 480 screen's colour cleared to black, the viewport set to
+/// it and back to the one the host holds ([`Host::bound`]).
 pub fn prelude(mem: &mut dyn GuestMemory, host: &dyn Host, scratch: u32) -> Result<(), &'static str> {
-    let device = mem.u32(DEVICE).map_err(|_| "unread")?;
-    let saved = mem.bytes(device.wrapping_add(DEVICE_VIEWPORT), 24).map_err(|_| "unread")?;
+    let bound = host.bound().ok_or("device")?;
+    let saved: Vec<u8> = bound[2..].iter().flat_map(|w| w.to_le_bytes()).collect();
     let screen = [0, 0, 0x280, 0x1e0, 0, mem.u32(ONE).map_err(|_| "unread")?];
     let staged: Vec<u8> = screen.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
     mem.write(scratch, &staged).map_err(|_| "unwritable")?;
@@ -370,12 +352,10 @@ pub fn prelude(mem: &mut dyn GuestMemory, host: &dyn Host, scratch: u32) -> Resu
 /// The finish's cut (`0x00013cd0`, Code): the stage requests cleared and
 /// `[0x00467004]` set to -1; each stage whose committed texture is not
 /// null set to null through `host` and its cache cleared (`0x0001cf50`);
-/// `[0x00408338]` cleared; the device's index buffer, when it has one,
-/// loses its device reference and the device's index buffer and base
-/// vertex are cleared; the pixel shader none through `host`. `Err` names
-/// what the cut could not make: `release` when the reference is the index
-/// buffer's last, whose destroy (`D3D_DestroyResource` `0x003fb520`) is
-/// not made here.
+/// `[0x00408338]` cleared; the pixel shader none through `host`. The
+/// body's index-buffer release (the device's `+0x7a0` and `+0x1c`) is the
+/// guest device's own state: no device exists, so nothing stands for it.
+/// `Err` names the call the cut could not make.
 pub fn cut_finish(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), &'static str> {
     let unwritable = |_| "unwritable";
     for stage in 0..4 {
@@ -392,18 +372,7 @@ pub fn cut_finish(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), &'st
         }
         mem.set_u32(at, 0).map_err(unwritable)?;
     }
-    let device = mem.u32(DEVICE).map_err(|_| "unread")?;
-    let indices = mem.u32(device.wrapping_add(DEVICE_INDICES)).map_err(|_| "unread")?;
     mem.set_u32(FINISH_CLEARED, 0).map_err(unwritable)?;
-    if indices != 0 {
-        let refs = mem.u32(indices).map_err(|_| "unread")?.wrapping_sub(DEVICE_REF);
-        if refs & LIVE_REFS == 0 {
-            return Err("release");
-        }
-        mem.set_u32(indices, refs).map_err(unwritable)?;
-    }
-    mem.set_u32(device.wrapping_add(DEVICE_INDICES), 0).map_err(unwritable)?;
-    mem.set_u32(device.wrapping_add(DEVICE_BASE_VERTEX), 0).map_err(unwritable)?;
     if !host.pixel_shader(mem, 0) {
         return Err("device");
     }
@@ -540,6 +509,7 @@ mod tests {
         textures: Mutex<Vec<(u32, u32)>>,
         shaders: Mutex<Vec<u32>>,
         viewports: Mutex<Vec<[u32; 6]>>,
+        held: Mutex<Option<[u32; 8]>>,
         refuse: std::sync::atomic::AtomicBool,
     }
 
@@ -556,7 +526,7 @@ mod tests {
             true
         }
         fn bound(&self) -> Option<[u32; 8]> {
-            None
+            *self.held.lock().unwrap()
         }
         fn texture(&self, _: &mut dyn GuestMemory, stage: u32, texture: u32) -> bool {
             if self.refuse.load(Ordering::Relaxed) {
@@ -570,7 +540,11 @@ mod tests {
             true
         }
         fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
-            self.viewports.lock().unwrap().push(std::array::from_fn(|i| mem.u32(at + 4 * i as u32).unwrap()));
+            let v: [u32; 6] = std::array::from_fn(|i| mem.u32(at + 4 * i as u32).unwrap());
+            if let Some(held) = self.held.lock().unwrap().as_mut() {
+                held[2..].copy_from_slice(&v);
+            }
+            self.viewports.lock().unwrap().push(v);
             true
         }
     }
@@ -629,18 +603,14 @@ mod tests {
     }
 
     /// The prelude `0x00014ac0` at target 0 with the context's `+7` set:
-    /// the 640 x 480 screen cleared black, the device's viewport put back,
+    /// the 640 x 480 screen cleared black, the host's viewport put back,
     /// then the clear.
     #[test]
     fn the_prelude_clears_the_screen_and_puts_the_viewport_back() {
-        let dev = Device::default();
-        let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
-        m.set_u32(DEVICE, PRELUDE_DEVICE).unwrap();
-        m.set_u32(ONE, 1f32.to_bits()).unwrap();
         let saved = [8, 16, 320, 240, 0, 1f32.to_bits()];
-        for (i, w) in saved.iter().enumerate() {
-            m.set_u32(PRELUDE_DEVICE + DEVICE_VIEWPORT + 4 * i as u32, *w).unwrap();
-        }
+        let dev = Device { held: Mutex::new(Some([A, Z, saved[0], saved[1], saved[2], saved[3], saved[4], saved[5]])), ..Default::default() };
+        let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
+        m.set_u32(ONE, 1f32.to_bits()).unwrap();
         m.write(CLEAR_PRELUDE_ON, &[1]).unwrap();
         assert_eq!(cut_clear(&mut m, &dev, 1 | 1 << 5, 0x0011_2233, 0x3f80_0000, 0, SCRATCH_AT), Ok(()));
         assert_eq!(*dev.viewports.lock().unwrap(), [[0, 0, 640, 480, 0, 1f32.to_bits()], saved]);
@@ -650,25 +620,26 @@ mod tests {
         assert_eq!(dev.viewports.lock().unwrap().len(), 2, "no prelude off target 0");
     }
 
-    const SCRATCH_AT: u32 = 0x0061_0000;
-    const PRELUDE_DEVICE: u32 = 0x0062_0000;
-
-    const DEVICE_AT: u32 = 0x0050_0000;
-    const INDICES: u32 = 0x0060_0100;
-
-    /// The finish's globals with stages 0 and 2 committed and an index
-    /// buffer holding `refs`.
-    fn finish_mem(refs: u32) -> FlatMemory {
+    /// A prelude with no viewport held is named, with no call made.
+    #[test]
+    fn a_prelude_with_no_viewport_held_is_named() {
+        let dev = Device::default();
         let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
-        m.set_u32(DEVICE, DEVICE_AT).unwrap();
+        m.write(CLEAR_PRELUDE_ON, &[1]).unwrap();
+        assert_eq!(cut_clear(&mut m, &dev, 1, 0, 0, 0, SCRATCH_AT), Err("device"));
+        assert!(dev.viewports.lock().unwrap().is_empty() && dev.clears.lock().unwrap().is_empty());
+    }
+
+    const SCRATCH_AT: u32 = 0x0061_0000;
+
+    /// The finish's globals with stages 0 and 2 committed.
+    fn finish_mem() -> FlatMemory {
+        let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
         for (stage, t) in [(0, A), (1, 0), (2, B), (3, 0)] {
             m.set_u32(STAGE_REQUESTED + 4 * stage, t).unwrap();
             m.set_u32(STAGE_COMMITTED + 4 * stage, t).unwrap();
         }
         m.set_u32(FINISH_CLEARED, 7).unwrap();
-        m.set_u32(DEVICE_AT + DEVICE_INDICES, INDICES).unwrap();
-        m.set_u32(DEVICE_AT + DEVICE_BASE_VERTEX, 12).unwrap();
-        m.set_u32(INDICES, refs).unwrap();
         m
     }
 
@@ -678,7 +649,7 @@ mod tests {
     #[test]
     fn the_frame_finish_makes_no_d3d_entry() {
         let dev = Device::default();
-        let mut m = finish_mem((2 * DEVICE_REF) | 1);
+        let mut m = finish_mem();
         assert_eq!(cut_finish(&mut m, &dev), Ok(()));
         assert_eq!(*dev.textures.lock().unwrap(), [(0, 0), (2, 0)], "the committed stages, in order");
         assert_eq!(*dev.shaders.lock().unwrap(), [0], "the pixel shader none");
@@ -688,26 +659,16 @@ mod tests {
         }
         assert_eq!(m.u32(FINISH_UNSET).unwrap(), u32::MAX);
         assert_eq!(m.u32(FINISH_CLEARED).unwrap(), 0);
-        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF | 1, "one device reference dropped");
-        assert_eq!((m.u32(DEVICE_AT + DEVICE_INDICES).unwrap(), m.u32(DEVICE_AT + DEVICE_BASE_VERTEX).unwrap()), (0, 0));
         assert_eq!(cut_finish(&mut m, &dev), Ok(()), "a second finish");
         assert_eq!(dev.textures.lock().unwrap().len(), 2, "nothing committed is left to set");
-        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF | 1, "no index buffer to release");
     }
 
-    /// The index buffer's last reference (its destroy) and a refused stage
-    /// are named.
+    /// A refused stage is named.
     #[test]
     fn a_finish_the_cut_cannot_make_is_named() {
         let dev = Device::default();
-        let mut m = finish_mem(DEVICE_REF);
-        assert_eq!(cut_finish(&mut m, &dev), Err("release"));
-        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF, "the reference not dropped");
-        assert_eq!(m.u32(DEVICE_AT + DEVICE_INDICES).unwrap(), INDICES);
-        assert!(dev.shaders.lock().unwrap().is_empty());
-        let dev = Device::default();
         dev.refuse.store(true, Ordering::Relaxed);
-        let mut m = finish_mem(2 * DEVICE_REF);
+        let mut m = finish_mem();
         assert_eq!(cut_finish(&mut m, &dev), Err("device"));
         assert_eq!(m.u32(STAGE_COMMITTED).unwrap(), A, "the stage's cache kept");
         assert_eq!(m.u32(FINISH_CLEARED).unwrap(), 7);

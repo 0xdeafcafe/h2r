@@ -179,7 +179,7 @@ The value is then applied by state:
 |---|---|
 | below `0x5c` | `SetRenderState_Simple` `0x003f5cf0` (ECX the push header from `0x0043e6f0`, EDX the value), then the D3D shadow `0x00407498 + 4*state` |
 | `0x5c..0x87` | memory only: the shadow, and the state's mask (`0x0043e4d0`) ORed into the dirty word `0x00407490`. D3D pushes it at the next draw |
-| `0x88` | the device's `+0x790`, dirty bit `0x4000`, `0x004076b8` |
+| `0x88` | the device's `+0x790`, dirty bit `0x4000`, `0x004076b8`. The port leaves the device word out: it only fed D3D |
 | `0x89..0xa5` | that state's setter (`0x003f5xxx`, stdcall, one argument) |
 
 Nothing in it compares against the shadow, so every entry of every draw

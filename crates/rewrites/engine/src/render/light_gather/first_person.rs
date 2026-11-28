@@ -23,9 +23,10 @@
 //!    for 11 `0x000496f0`), the stencil off (`0x00015370`), and the draw
 //!    `0x00044550` and end `0x000445d0` when the draw byte is set;
 //! 6. the tail: two zeroes, stencil off (`0x003f5590`), the scissor
-//!    cleared (`0x003f8760`), the depth range inline (the device's words
-//!    and its push, `0x003faae0` when the buffer is full and `0x003f6190`),
-//!    the view's target (`0x00014bc0`), and both flag words zeroed.
+//!    cleared (`0x003f8760`), the view's target (`0x00014bc0`, AL 1), and
+//!    both flag words zeroed. The body's inline depth range (the device's
+//!    `+0x1c10` words, `0x003faae0`, `0x003f6190`) only fed D3D and is
+//!    not made.
 //!
 //! Every callee is a guest call made below the guest's frame ([`FRAME`]),
 //! and while it runs its return slot names the guest's return site
@@ -92,11 +93,9 @@ pub mod call {
     /// stack (1), `ret 4`.
     pub const LIGHT_VOLUME: u32 = 0x000c_17f0;
     pub const RECORDS: u32 = points::FIRST_PERSON_LIGHT_RECORDS.base;
-    /// The push buffer's room: EAX the bytes, ESI the device; stack (half
-    /// of them), `ret 4`; EAX the put pointer.
+    /// The original's depth-range push, which the port does not make:
+    /// the push buffer's room and the device's pending state.
     pub const PUSH_SPACE: u32 = 0x003f_aae0;
-    /// The device's pending state into the push buffer: EAX the put
-    /// pointer, ESI the device; EAX the put pointer after.
     pub const PUSH_STATE: u32 = 0x003f_6190;
 }
 
@@ -107,8 +106,6 @@ pub mod site {
     pub const CONSTANTS: u32 = 0x0004_0583;
     pub const STENCIL_ENABLE: u32 = 0x0004_07b5;
     pub const SCISSORS: u32 = 0x0004_07bd;
-    pub const PUSH_SPACE: u32 = 0x0004_080a;
-    pub const PUSH_STATE: u32 = 0x0004_080f;
     pub const VIEW_TARGET: u32 = 0x0004_0823;
 }
 
@@ -173,15 +170,6 @@ const VIEW_TARGET: u32 = 0x0048_58b8;
 /// The tail's two zeroes.
 const LIGHT_ACTIVE: u32 = 0x0048_58bc;
 const STENCIL_STATE: u32 = 0x004b_843c;
-/// The D3D device, its put and end pointers (`+0`, `+4`), the depth
-/// range's two words and its dirty word, the words copied there, and
-/// the push buffer's room request.
-const DEVICE: u32 = 0x0040_7488;
-const DEVICE_RANGE: u32 = 0x1c10;
-const DEVICE_DIRTY: u32 = 0x1c18;
-const RANGE_NEAR: u32 = 0x0048_5adc;
-const RANGE_FAR: u32 = 0x0048_5ae0;
-const PUSH_BYTES: u32 = 0x0040_8648;
 
 fn slot_base(index: u32) -> u32 {
     FIRST_PERSON_TABLE.wrapping_add(index.wrapping_mul(FIRST_PERSON_SLOT))
@@ -265,17 +253,11 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
         VIEW_TARGET,
         STENCIL_STATE,
         lp::PASS_FLAGS,
-        RANGE_NEAR,
-        RANGE_FAR,
-        PUSH_BYTES,
     ] {
         m.u32(global)?;
     }
     m.u8(LIGHT_ACTIVE)?;
     m.u8(lp::PASSES)?;
-    let device = m.u32(DEVICE)?;
-    m.bytes(device, 8)?;
-    m.bytes(device.wrapping_add(DEVICE_RANGE), 12)?;
     Ok(Plan { entry_esp, fpu })
 }
 
@@ -566,8 +548,10 @@ async fn light(
 }
 
 /// Step 6, the tail, for the light `l`: two zeroes, the stencil off, the
-/// scissor cleared, the depth range inline, the view's target, and both
-/// flag words zeroed.
+/// scissor cleared, the view's target, and both flag words zeroed. The
+/// body's inline depth range (the device's `+0x1c10` words and their
+/// push, `0x003faae0` and `0x003f6190`) only fed D3D: no device exists,
+/// so it is not made.
 async fn tail(cx: &Cx, p: &Plan, l: &Light) -> Result<(), EntryError> {
     let e = p.entry_esp;
     cx.write(|m| -> Result<(), MemFault> {
@@ -578,36 +562,8 @@ async fn tail(cx: &Cx, p: &Plan, l: &Light) -> Result<(), EntryError> {
     passes::named(cx, e, FRAME, site::STENCIL_ENABLE, request).await?;
     let request = regs(call::SCISSORS, l, 0).args([0, 0, 0]);
     passes::named(cx, e, FRAME, site::SCISSORS, request).await?;
-    // 0x000407bd: the depth range, as 0x00015720 makes it.
-    let (device, put, end) = cx.write(|m| -> Result<_, MemFault> {
-        let device = m.u32(DEVICE)?;
-        let dirty = m.u32(device.wrapping_add(DEVICE_DIRTY))? | 2;
-        let (far, near) = (m.u32(RANGE_FAR)?, m.u32(RANGE_NEAR)?);
-        let (put, end) = (m.u32(device)?, m.u32(device.wrapping_add(4))?);
-        m.set_u32(device.wrapping_add(DEVICE_RANGE), near)?;
-        m.set_u32(device.wrapping_add(DEVICE_RANGE + 4), far)?;
-        m.set_u32(device.wrapping_add(DEVICE_DIRTY), dirty)?;
-        Ok((device, put, end))
-    })?;
-    let tail = |target| GuestCall::new(target).esi(device).edi(l.datum).ebx(0);
-    let mut put = put;
-    if put >= end {
-        let bytes = cx.read(|m| m.u32(PUSH_BYTES))?;
-        let request = tail(call::PUSH_SPACE)
-            .eax(bytes)
-            .ecx(bytes >> 1)
-            .args([bytes >> 1]);
-        put = passes::named(cx, e, FRAME, site::PUSH_SPACE, request)
-            .await?
-            .eax;
-    }
-    let request = tail(call::PUSH_STATE).eax(put);
-    let put = passes::named(cx, e, FRAME, site::PUSH_STATE, request)
-        .await?
-        .eax;
-    cx.write(|m| m.set_u32(device, put))?;
     let view = u32::from(cx.read(|m| m.u16(VIEW_TARGET))?);
-    let request = tail(call::TARGET).eax((put & !0xff) | 1).args([view, 0]);
+    let request = regs(call::TARGET, l, 0).eax(1).args([view, 0]);
     passes::named(cx, e, FRAME, site::VIEW_TARGET, request).await?;
     cx.write(|m| -> Result<(), MemFault> {
         m.set_u8(lp::PASSES, 0)?;
@@ -1052,7 +1008,7 @@ mod tests {
         assert!(site::CONSTANTS < RECEIVERS.target);
         assert!(RECEIVERS.end < TARGET_1.target && TARGET_1.end < DIFFUSE.target);
         assert!(DIFFUSE.end < SPECULAR.target && SPECULAR.end < site::STENCIL_ENABLE);
-        assert!(site::PUSH_STATE < site::VIEW_TARGET);
+        assert!(site::SCISSORS < site::VIEW_TARGET);
     }
 
     #[test]

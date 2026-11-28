@@ -87,12 +87,6 @@ pub const DEFERRED_BITS: u32 = 0x0043_e4d0;
 /// through their setters.
 pub const SIMPLE_SLOTS: u8 = 0x5c;
 pub const DEFERRED_SLOTS: u8 = 0x88;
-/// The device pointer, the push-buffer threshold `MakeRequestedSpace` is
-/// asked for, and the device's clip range and its flags (`+0x1c18` bit 1:
-/// the game owns it).
-pub const DEVICE: u32 = native_targets::DEVICE;
-pub const PUSH_THRESHOLD: u32 = 0x0040_8648;
-pub const DEVICE_CLIP: u32 = 0x1c10;
 
 /// Guest render-state slots (`d3d::abi::RENDER_STATE_SETTERS`).
 pub const SLOT_FOG_COLOUR: u32 = 138;
@@ -113,9 +107,6 @@ const KIND2_EXTENT: u32 = 0x0045_dd60;
 const ROW_SCALE: u32 = 0x0045_dd40;
 const TRANSFORM_27: u32 = 0x0045_dc0c;
 const TRANSFORM_31: u32 = 0x0045_e460;
-const PUSH_W: u32 = 0x0045_e3b0;
-const CLIP_NEAR: u32 = 0x0048_5adc;
-const CLIP_FAR: u32 = 0x0048_5ae0;
 const CLEAR_PLAIN: u32 = 0x0046_70cd;
 const COLOUR_SCALE: u32 = 0x0045_dc38;
 const RESET_SCALAR: u32 = 0x0045_dbd4;
@@ -498,18 +489,6 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
 
 fn stage(mem: &mut dyn GuestMemory, at: u32, words: &[u32]) -> Result<(), Cause> {
     mem.write(at, &words_le(words)).map_err(unwritable)
-}
-
-/// The push buffer's put, made room for as the body's inline writers do:
-/// at or past the limit `+4`, `MakeRequestedSpace([0x00408648] / 2,
-/// [0x00408648])`.
-pub(crate) fn reserve(mem: &mut dyn GuestMemory, host: &dyn Host, device: u32) -> Result<u32, Cause> {
-    let put = word(mem, device)?;
-    if put < word(mem, device.wrapping_add(4))? {
-        return Ok(put);
-    }
-    let t = word(mem, PUSH_THRESHOLD)?;
-    host.make_space(mem, t >> 1, t).ok_or("device")
 }
 
 /// Makes `s`: the game-side words, then the device's calls in the body's

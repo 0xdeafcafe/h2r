@@ -1123,7 +1123,6 @@ mod first_person_body {
     const TAG_TABLE: u32 = 0x0206_0000;
     const DATA: u32 = 0x0207_0000;
     const DEFINITION: u32 = 0xa000_0003;
-    const DEVICE: u32 = 0x0208_0000;
     const WEIGHT: u32 = 0x1111_1111;
     const SCALE: u32 = 0x2222_2222;
     const LIGHT_MASK: u32 = 0x004c_1a68;
@@ -1167,11 +1166,6 @@ mod first_person_body {
         g.map(0x004b_843c, 4);
         g.put_u32(PASS_FLAGS, 0x55).put_u8(PASSES, 0);
         g.put_u32(LIGHT_MASK, receivers);
-        g.put_u32(0x0040_7488, DEVICE)
-            .put_u32(DEVICE, 0x100)
-            .put_u32(DEVICE + 4, 0x200);
-        g.map(DEVICE + 0x1c10, 12);
-        g.put_u32(0x0040_8648, 0x40);
         g
     }
 
@@ -1213,13 +1207,7 @@ mod first_person_body {
                     m.u32(esp + 4 + 0x18).unwrap(),
                 ));
             }
-            match c.target {
-                call::PUSH_STATE => Regs {
-                    eax: 0x1234_5600,
-                    ..Regs::default()
-                },
-                _ => Regs::default(),
-            }
+            Regs::default()
         });
         let lights = out.lock().unwrap().take();
         Ran {
@@ -1312,9 +1300,10 @@ mod first_person_body {
         assert_eq!(
             calls
                 .iter()
-                .filter(|&&target| target == call::PUSH_STATE)
+                .filter(|&&target| target == call::SCISSORS)
                 .count(),
-            1
+            1,
+            "one tail"
         );
     }
 
@@ -1350,10 +1339,9 @@ mod first_person_body {
                 call::LAYER_END,
                 // 13: a kind-0 volume and colour B, not in the list.
                 call::STENCIL,
-                // The tail; the push buffer has room.
+                // The tail: no depth-range push.
                 call::STENCIL_ENABLE,
                 call::SCISSORS,
-                call::PUSH_STATE,
                 call::TARGET,
             ]
         );
@@ -1365,7 +1353,7 @@ mod first_person_body {
         assert_eq!(named[1], Some(site::RECORDS));
         assert_eq!(named[7], Some(RECEIVERS.draw));
         assert_eq!(named[13], Some(DIFFUSE.draw));
-        assert_eq!(named[19], Some(site::VIEW_TARGET));
+        assert_eq!(named[18], Some(site::VIEW_TARGET));
         assert_eq!(passes::return_site(E - 0x9c), None, "cleared after");
         // The layer-draw hook finds the slot in the loop's frame.
         assert_eq!(ran.frames, [(0, TABLE + 0x400), (0, TABLE + 0x400)]);
@@ -1398,9 +1386,8 @@ mod first_person_body {
         assert_eq!(made(3).ebx, Some(DATA), "layer 11's begin keeps EBX");
         assert_eq!(made(6).ebx, Some(0), "the stencil off");
         assert_eq!(made(10).ebx, Some(0));
-        assert_eq!(made(18).esi, Some(DEVICE), "the push, ESI the device");
-        assert_eq!(made(19).eax, Some(0x1234_5601));
-        assert_eq!(made(19).args, [0x3407, 0]);
+        assert_eq!(made(18).eax, Some(1), "AL 1, no device put under it");
+        assert_eq!(made(18).args, [0x3407, 0]);
 
         let lights = ran.lights.expect("what it did");
         assert_eq!(lights.count, 1);
@@ -1412,25 +1399,7 @@ mod first_person_body {
         let g = &ran.run.guest;
         assert_eq!(g.u32(PASS_FLAGS).unwrap(), 0, "zeroed by the tail");
         assert_eq!(g.u8(PASSES).unwrap(), 0);
-        assert_eq!(g.u32(DEVICE).unwrap(), 0x1234_5600, "the put pointer");
-        assert_eq!(g.u32(DEVICE + 0x1c18).unwrap(), 2, "the depth range dirty");
         assert_eq!(g.u32(E - 0x84).unwrap(), 1, "the loop's index");
-    }
-
-    #[test]
-    fn a_full_push_buffer_asks_for_room_first() {
-        let mut g = guest(0);
-        g.put_u32(DEVICE, 0x300);
-        let ran = run_lights(g);
-        let targets: Vec<u32> = ran.run.calls.iter().map(|c| c.target).collect();
-        let at = targets.iter().position(|&t| t == call::PUSH_SPACE).unwrap();
-        assert_eq!(targets[at + 1], call::PUSH_STATE);
-        let room = &ran.run.calls[at];
-        assert_eq!(
-            (room.eax, room.ecx, room.args.as_slice()),
-            (Some(0x40), Some(0x20), &[0x20][..])
-        );
-        assert_eq!(ran.sites[at].1, Some(site::PUSH_SPACE));
     }
 
     #[test]
