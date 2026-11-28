@@ -1,7 +1,9 @@
 //! The vertical blank and the engine's frame wait, on the 60 Hz logical
 //! clock, with no D3D device.
 //!
-//! Halo sets its vblank callback (`0x12b2a0`) at device `+0x1DB8`. On the
+//! Halo sets its vblank callback (`0x12b2a0`) in its vblank install
+//! (`0x12b070`, [`crate::display`]), which keeps it as
+//! [`crate::display::vblank_callback`] and not in a device. On the
 //! Xbox the GPU interrupt calls it once per vblank as
 //! `cdecl callback(D3DVBLANKDATA *)` (`{VBlank, Swap, Flags}`); it bumps the
 //! 64-bit counter at `0x485AB0`. The frame wait `0x12b2e0` spins on that
@@ -19,8 +21,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use runtime::{CallConvention, CpuAbi, Dispatch, ExecCtx, Guest, GuestFault, GuestInterrupt, TransferAbi};
 
-/// The callback's slot in the guest's device object.
-const VBLANK_CALLBACK: u32 = crate::guest_entries::DEVICE + 0x1db8;
 /// `D3DVBLANKDATA::Flags` for the first vblank after a `Swap`.
 const VBLANK_SWAPDONE: u32 = 1;
 /// `NtYieldExecution`.
@@ -73,7 +73,7 @@ pub fn clocked_vblanks()
         let missed = u32::try_from(missed).unwrap_or(u32::MAX);
         let vblank = VBLANKS.fetch_add(missed.wrapping_add(1), Ordering::Relaxed).wrapping_add(missed).wrapping_add(1);
         let flags = if SWAPPED.swap(false, Ordering::Relaxed) { VBLANK_SWAPDONE } else { 0 };
-        let callback = guest.u32(VBLANK_CALLBACK)?;
+        let callback = crate::display::vblank_callback();
         if callback == 0 {
             return Ok(None);
         }
@@ -167,7 +167,7 @@ fn step(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mut w: Wait) -> Result<TransferAbi,
     if w.idle >= MAX_IDLE_YIELDS {
         unimplemented!("{NAME}: {MAX_IDLE_YIELDS} yields without a vblank (counter {counter}, waiting for {goal})");
     }
-    if ctx.memory().u32(VBLANK_CALLBACK)? == 0 {
+    if crate::display::vblank_callback() == 0 {
         unimplemented!("{NAME}: no vblank callback is set (counter {counter}, waiting for {goal})");
     }
     // Give the CPU up: other threads run, or the clock moves to the next

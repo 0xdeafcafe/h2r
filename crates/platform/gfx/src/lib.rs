@@ -85,6 +85,9 @@ pub mod xdk;
 #[cfg(feature = "gpu")]
 pub use context::{GfxContext, GfxError, GpuHost, instance, instance_for};
 pub use format::{D3DFormat, HostFormat};
+/// The display's gamma ramp the present applies (docs/graphics/d3d-device.md,
+/// "Brightness and gamma").
+pub use frame_types::display::gamma as display_gamma;
 #[cfg(feature = "gpu")]
 pub use presenter::{Acquired, OffscreenTarget, Presenter, RenderTarget};
 #[cfg(feature = "gpu")]

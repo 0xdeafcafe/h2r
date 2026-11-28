@@ -130,26 +130,6 @@ pub const ENTRIES: &[(u32, &str, &str)] = &[
 /// The last fence [`set_fence`] handed out.
 static FENCE: AtomicU32 = AtomicU32::new(0);
 
-/// The last gamma ramp the game loaded (256 red, 256 green, 256 blue),
-/// `None` before the first.
-static GAMMA: std::sync::Mutex<Option<[u8; 768]>> = std::sync::Mutex::new(None);
-
-/// The game's gamma ramp ([`Answer::Gamma`]): what the brightness setting
-/// (`0x12d08`) last loaded.
-pub fn gamma_ramp() -> Option<[u8; 768]> {
-    *GAMMA.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Keeps `ramp`. The presenter does not apply a ramp yet, so one that is
-/// not the identity panics by name.
-fn set_gamma(ramp: [u8; 768]) {
-    let identity = ramp.chunks_exact(256).all(|c| c.iter().enumerate().all(|(i, &v)| v as usize == i));
-    *GAMMA.lock().unwrap_or_else(|e| e.into_inner()) = Some(ramp);
-    if !identity {
-        unimplemented!("display: the brightness gamma ramp applied at the present");
-    }
-}
-
 /// What an entry does: answer with `eax` and pop `cleanup` bytes, or panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -162,8 +142,6 @@ enum Answer {
     State(device_state::Setter),
     /// `D3DDevice_Swap` (EAX = flags; returns EAX = the swap count; `ret`).
     Swap,
-    /// The miniport gamma ramp (EDX = the 768-byte `D3DGAMMARAMP`; `ret`).
-    Gamma,
     Gap,
 }
 
@@ -199,7 +177,6 @@ fn answer(addr: u32) -> Answer {
         // D3DDevice_SetShaderConstantMode (once, from 0x12560): the native
         // renderer has no constant-mode switch to set.
         0x003f_6e10 => Answer::Return { eax: None, cleanup: 0 },
-        0x003f_f5c6 => Answer::Gamma,
         _ => Answer::Gap,
     }
 }
@@ -247,14 +224,6 @@ fn call(
         Answer::Swap => {
             crate::frame_wait::swapped();
             (Some(crate::frame_wait::swaps()), 0)
-        }
-        Answer::Gamma => {
-            let mut ramp = [0u8; 768];
-            for (i, b) in ramp.iter_mut().enumerate() {
-                *b = mem.u8(cpu.edx.wrapping_add(i as u32))?;
-            }
-            set_gamma(ramp);
-            (None, 0)
         }
         Answer::Gap => {
             let caller = mem.u32(cpu.esp).unwrap_or(0);
@@ -312,7 +281,7 @@ mod tests {
     #[test]
     fn the_rest_are_named_gaps() {
         let gaps: Vec<&str> = ENTRIES.iter().filter(|e| answer(e.0) == Answer::Gap).map(|e| e.1).collect();
-        assert_eq!(gaps.len(), 88 - 7 - 35 - 4 - 3, "{gaps:?}");
+        assert_eq!(gaps.len(), 88 - 7 - 35 - 4 - 2, "{gaps:?}");
         for name in [
             "D3D_MakeRequestedSpace",
             "D3DDevice_Begin",
