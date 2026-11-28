@@ -4,8 +4,9 @@
 //! size, how its first use loads it, what the frame does with it and the
 //! ops and slots that do it. [`Owned`] is the graph's own set of them:
 //! one surface per declared target, allocated by the graph, kept across
-//! frames while its shape holds, and handed to the replay as the map it
-//! draws on (`draw_display_on`'s `targets`). The view setup's binds and
+//! frames while its shape holds, as the map the replay draws on
+//! (`draw_display_on`'s `targets`; the threaded owner still makes that
+//! map from the guest's surfaces). The view setup's binds and
 //! clears (`render_bridge::view_setup`) name these targets: the scene sink
 //! files them as the [`TargetRef`]s declared here.
 
