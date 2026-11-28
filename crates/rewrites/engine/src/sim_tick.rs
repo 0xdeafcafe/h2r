@@ -72,7 +72,8 @@ pub const PHASES: &[Phase] = &[
     guest(0x0020_b660, "unknown_20b660"),
     guest(0x0015_c150, "game_engine"),
     guest(0x0019_5ed0, "unknown_195ed0"),
-    guest(0x0020_9310, "script_scheduler"),
+    // The HaloScript scheduler, crate::hs_update; its threads stay guest.
+    rust(0x0020_9310, "script_scheduler"),
     guest(0x0013_8c10, "unknown_138c10"),
     guest(0x000b_6f10, "objects_before_physics"),
     guest(0x001c_3d30, "havok_step"),
@@ -282,7 +283,7 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
 /// is off is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The Rust bodies ([`crate::effects_phase`],
+    /// The Rust bodies ([`crate::hs_update`], [`crate::effects_phase`],
     /// [`crate::countdown_requests`]); off only in tests, as the lifted
     /// reference.
     pub rust: bool,
@@ -436,6 +437,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                 || match phase.entry {
                     EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
                         == crate::effects_phase::Walked::Declined,
+                    crate::hs_update::ENTRY => {
+                        crate::hs_update::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
                     crate::countdown_requests::ENTRY => {
                         cx.write(|m| crate::countdown_requests::run(m))?;
                         false

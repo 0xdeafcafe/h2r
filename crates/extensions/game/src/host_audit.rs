@@ -264,7 +264,8 @@ impl Feature for Audit {
             ("objects_post_physics", &points::OBJECTS_POST_PHYSICS),
             ("objects_finalize", &points::OBJECTS_FINALIZE),
             ("ai", &points::AI_UPDATE),
-            ("scripts", &points::SCRIPT_UPDATE),
+            // The script update is a Rust tick phase (engine::hs_update):
+            // its time is `script_scheduler` in sim.ledger.
             ("effect_parts", &points::EFFECT_PART_CREATE),
             ("particles", &points::PARTICLE_SYSTEM_UPDATE),
             ("director", &points::CAMERA_DIRECTOR),
