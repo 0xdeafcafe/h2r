@@ -50,8 +50,10 @@ pub enum Dropped {
     Group(GroupRefusal),
     /// The scene's open light is not this call's (the hand-off refused).
     Light,
-    /// The additional casters' record walk (`0x00030ed0`,
-    /// [`super::additional_casters`]) did not read whole.
+    /// The additional casters' pair (`0x00030ed0`) would make a suffix:
+    /// a candidate's first match in the current visibility list is marked
+    /// `0x1000`, or the candidates do not read. Its record walk is not
+    /// built.
     AdditionalCasters,
     /// The host did not draw the light's groups (`Host::draw_scene_light`).
     Host,
@@ -350,7 +352,13 @@ fn take(mem: &mut dyn GuestMemory, e: &Entry) -> Result<usize, Dropped> {
     if !crate::scene_step::current_light_matches(&planned.light, planned.steps.as_slice()) {
         return Err(Dropped::Light);
     }
-    if planned.additional_casters {
+    // The additional casters' pair (`0x00030ed0`) makes no suffix when no
+    // candidate's first match in the current visibility list is marked
+    // `0x1000` (`passes::additional::empty`): it draws nothing, and its one
+    // store puts back the cursor it saved, so the light draws its own
+    // steps. A pair that would make a suffix needs the marker lookup and
+    // the suffix's record walk, which are not built.
+    if planned.additional_casters && passes::additional::empty(&*mem).is_err() {
         return Err(Dropped::AdditionalCasters);
     }
     let mut light = crate::scene_step::current_light().ok_or(Dropped::Light)?;
