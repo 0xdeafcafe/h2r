@@ -54,7 +54,7 @@ struct Template {
     call: u64,
     /// The draw as [`prepare`] made it, for the arm's comparison.
     raw: Prepared,
-    /// The draw as admitted (with the Rust material once proven): what a
+    /// The draw as admitted (with the Rust material): what a
     /// cut record draws, with its own vertices, tint and texture.
     drawn: Prepared,
     writes_depth: bool,
@@ -500,36 +500,28 @@ fn prepare(mode: Mode, snapshot: &DrawSnapshot<'_>) -> Result<Prepared, &'static
     })
 }
 
-/// The registers a program reads and the first of the four rows its
-/// position goes through. `None` when the microcode does not decode.
-fn constant_reads(
-    microcode: &[u32],
-) -> Option<(native_render::decal_material::Reads, Option<u8>)> {
+/// The first of the four constant rows a program's position goes
+/// through. `None` when the microcode does not decode to rows.
+fn position_base(microcode: &[u32]) -> Option<u8> {
     use d3d::clip_space::epilogue::{Position, position};
-    use shaders::vsh::{Program, ProgramKind, SrcReg};
-    let program = Program::from_words(ProgramKind::Normal, microcode).ok()?;
-    let mut reads = native_render::decal_material::Reads::default();
-    for inst in &program.instructions {
-        for src in inst.sources() {
-            if let SrcReg::Const { index, relative } = src.reg {
-                if relative {
-                    reads.relative = true;
-                }
-                reads.registers.insert(index);
-            }
-        }
-    }
-    let base = match position(microcode) {
+    match position(microcode) {
         Position::Rows(b) => Some(b),
         _ => None,
-    };
-    Some((reads, base))
+    }
 }
 
-/// Builds the parts of a proven draw from Rust: the combiner from the
-/// mode's material and the position matrix rows from the open view,
-/// instead of the guest's own words.
-fn apply_rust(prepared: &mut Prepared, mode: Mode, d: &d3d::ResolvedDraw) {
+/// Builds the material of every admitted draw from Rust: the combiner
+/// from the mode's material and the position matrix rows from the open
+/// view, instead of the guest's own words. A draw Rust cannot build is a
+/// named refusal: `material_program` (no vertex program, or one whose
+/// position does not go through four rows) or `material_view` (no open
+/// view).
+fn apply_rust(prepared: &mut Prepared, mode: Mode, d: &d3d::ResolvedDraw) -> Result<(), &'static str> {
+    let VertexProcessing::Program { microcode, .. } = &d.shader.vertex else {
+        return Err("material_program");
+    };
+    let base = position_base(microcode).ok_or("material_program")?;
+    let view = render_bridge::native_decals::view().ok_or("material_view")?;
     let material = native_render::decal_material::material(mode, render_bridge::native_decals::offset_bits());
     prepared.shader.combiner = d3d::nv2a::guest_def(
         &material.combiner,
@@ -537,17 +529,11 @@ fn apply_rust(prepared: &mut Prepared, mode: Mode, d: &d3d::ResolvedDraw) {
         d.raw.render[136],
         d.shader.final_combiner_latch,
     );
-    let VertexProcessing::Program { microcode, .. } = &d.shader.vertex else { return };
-    let (Some((_, Some(base))), Some(view)) =
-        (constant_reads(microcode), render_bridge::native_decals::view())
-    else {
-        return;
-    };
     for (i, row) in view.rows.iter().enumerate() {
-        if let Some(c) = prepared.shader.vertex.constants.get_mut(usize::from(base) + i) {
-            *c = row.map(f32::from_bits);
-        }
+        let c = prepared.shader.vertex.constants.get_mut(usize::from(base) + i).ok_or("material_program")?;
+        *c = row.map(f32::from_bits);
     }
+    Ok(())
 }
 
 impl DrawAdmission for Glue {
@@ -596,52 +582,11 @@ impl DrawAdmission for Glue {
         // The mode's first admitted draw is its template.
         let raw = held.is_none().then(|| prepared.clone());
         render_bridge::native_decals::note_candidate();
-        // Once the material is proven the draw is built from it, and one
-        // draw in 64 is the guest's own, compared with the Rust one.
-        let proven = render_bridge::native_decals::material_proven();
-        let sampled = render_bridge::native_decals::proof_sample();
-        if proven && !sampled {
-            apply_rust(&mut prepared, mode, snapshot.draw);
-        }
-        if sampled {
-            let material = native_render::decal_material::material(
-                mode,
-                render_bridge::native_decals::offset_bits(),
-            );
-            let d = snapshot.draw;
-            let mut fields = d.shader.pixel_shader.as_ref().map_or_else(
-                || vec!["combiner_missing".to_owned()],
-                |pixel| native_render::decal_material::compare(&material, pixel, &d.raw.render),
-            );
-            if let VertexProcessing::Program { microcode, .. } = &d.shader.vertex {
-                let viewport = [d.viewport.x, d.viewport.y, d.viewport.width, d.viewport.height];
-                match constant_reads(microcode) {
-                    Some((reads, base)) => fields.extend(native_render::decal_material::compare_constants(
-                        &reads,
-                        base,
-                        render_bridge::native_decals::view().as_ref(),
-                        viewport,
-                        &*d.shader.constants,
-                    )),
-                    None => fields.push("constant_reads_unread".to_owned()),
-                }
-                let mut code = vec![0x78, 0x20];
-                code.extend_from_slice(&((microcode.len() / 4) as u16).to_le_bytes());
-                code.extend(microcode.iter().flat_map(|w| w.to_le_bytes()));
-                match render_bridge::native_decals::program_in_tags(&code) {
-                    Some(true) => {}
-                    Some(false) => fields.push("vertex_program".to_owned()),
-                    None => fields.push("vertex_program_unread".to_owned()),
-                }
-            } else {
-                fields.push("vertex_program_missing".to_owned());
-            }
-            render_bridge::native_decals::proof_record(&fields);
-            if proven {
-                // The guest answers a compared draw; a difference has
-                // already ended the proof.
-                return None;
-            }
+        // Every admitted draw takes the Rust material; there is no guest
+        // comparison draw.
+        if let Err(why) = apply_rust(&mut prepared, mode, snapshot.draw) {
+            render_bridge::native_decals::note_admission_refusal(why);
+            return None;
         }
         let writes_depth = snapshot.draw.writes_depth_stencil();
         if let Some(raw) = raw {
@@ -895,7 +840,7 @@ mod arm_tests {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_program_reports_its_constant_reads_and_matrix_base() {
+    fn a_program_reports_its_matrix_base() {
         use shaders::vsh::encode::{Inst, Operand as O};
         use shaders::vsh::{MacOp, OutReg};
         let mut p = Vec::new();
@@ -909,9 +854,7 @@ mod tests {
         let last = p.len() - 1;
         let mut words: Vec<u32> = p.iter().flat_map(|i| i.words()).collect();
         words[last * 4 + 3] |= 1;
-        let (reads, base) = constant_reads(&words).unwrap();
-        assert_eq!(reads.registers.into_iter().collect::<Vec<_>>(), [10, 11, 12, 13, 40]);
-        assert_eq!((reads.relative, base), (false, Some(10)));
+        assert_eq!(position_base(&words), Some(10));
     }
 
     use super::*;

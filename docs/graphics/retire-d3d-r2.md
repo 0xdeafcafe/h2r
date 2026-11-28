@@ -281,28 +281,16 @@ scene; the callback `0x00044040` is then cut, and `0x00041cc0`, `0x000423c0`
 
 The decal material is ported as data (`native_render::decal_material`:
 each mode's render states from `0x000222d0` calls and its 60-word combiner
-block from `0x00043a40`). The game proves it: one resolved decal draw in 64
-is compared with it (`game/src/native_decals_glue.rs`), `render.scene`
-carries `decal_material_{sampled,clean,mismatched,proven}` and
-`decal_material_mismatch_<field>` (`combiner_w<n>`, `render_<index>`), and
-`native_decals::material_proven()` holds after 8 clean samples in a row.
-
-The view's matrix constants are compared with the same sample
-(`native_render::decal_material::compare_constants`). Of the registers the
-program reads (`constant_reads`, decoded with `shaders::vsh`), the four rows
-its position goes through must equal the open view's view-projection rows
-bit for bit and the draw's viewport its camera's rectangle (the relation of
-`d3d` `scene_sink/camera.rs`). Mismatch fields: `constant_c<n>`,
-`constant_c<n>_scaled` (the row times one factor), `constant_viewport`,
-`constant_view_unread`, `constant_relative`, and `constant_c<n>_ungiven`
-for a register nothing in Rust sets yet, so the proof stays open until the
-live fields name none.
-
-Once the material is proven (`material_proven()`), an admitted decal draw
-takes its combiner from the mode's Rust material and its position matrix
-rows from the open view (`apply_rust` in `native_decals_glue.rs`); one draw
-in 64 stays the guest's own and is the comparison. A call of `0x00044040` is
-cut where its records draw from the mode's template, not the scene's items
+block from `0x00043a40`). Every admitted decal draw takes its combiner from
+the mode's Rust material and its position matrix rows from the open view
+(`apply_rust` in `game/src/native_decals_glue.rs`); no draw is the guest's
+for comparison. The rows are the four the program's position goes through
+(`position_base`, the relation of `d3d` `scene_sink/camera.rs`); other
+registers keep the draw's own constants. A draw Rust cannot build is
+refused by name in the decal refusal tally: `material_program` (no vertex
+program, or a position that does not go through four rows) and
+`material_view` (no open view). A call of `0x00044040` is cut where its
+records draw from the mode's template, not the scene's items
 ([retire-d3d-decals.md](retire-d3d-decals.md)).
 
 The weather plates' host (**Code**): `render-bridge/src/native_weather.rs`
@@ -335,7 +323,7 @@ Tests: `native_weather.rs`
 `a_strip_without_the_plates_registers_is_refused_by_name`).
 
 Not built: nothing draws the scene's decal items, and the plates' host
-draws the guest's call, not the scene's `WeatherPlate` items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). Undrawn items are
+draws the guest's call, not the scene's `WeatherPlate` items. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
 

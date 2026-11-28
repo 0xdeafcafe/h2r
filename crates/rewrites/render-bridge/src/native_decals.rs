@@ -95,127 +95,11 @@ pub fn set_scene_draws(on: bool) {
     SCENE_DRAWS.store(on, Ordering::Relaxed);
 }
 
-/// The proof of the Rust decal material (`native_render::decal_material`)
-/// against the guest's own: one resolved draw in [`SAMPLE`] is compared,
-/// and the material is proven after [`CLEAN`] clean samples in a row. Any
-/// difference un-proves it and counts each differing field; the guest's
-/// state is what draws until it is proven again.
-pub const SAMPLE: u64 = 64;
-pub const CLEAN: u32 = 8;
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Proof {
-    seen: u64,
-    pub sampled: u64,
-    pub clean: u64,
-    run: u32,
-    pub mismatched: u64,
-    pub fields: BTreeMap<String, u64>,
-}
-
-impl Proof {
-    /// Whether this draw is to be compared (the first, then 1 in [`SAMPLE`]).
-    pub fn sample(&mut self) -> bool {
-        self.seen += 1;
-        (self.seen - 1) % SAMPLE == 0
-    }
-
-    /// Records a sample's differing fields.
-    pub fn record(&mut self, fields: &[String]) {
-        self.sampled += 1;
-        if fields.is_empty() {
-            self.clean += 1;
-            self.run = (self.run + 1).min(CLEAN);
-            return;
-        }
-        self.run = 0;
-        self.mismatched += 1;
-        for f in fields {
-            *self.fields.entry(f.clone()).or_default() += 1;
-        }
-    }
-
-    pub fn proven(&self) -> bool {
-        self.run >= CLEAN
-    }
-}
-
-static PROOF: Mutex<Proof> = Mutex::new(Proof {
-    seen: 0,
-    sampled: 0,
-    clean: 0,
-    run: 0,
-    mismatched: 0,
-    fields: BTreeMap::new(),
-});
 static OFFSET_BITS: AtomicU64 = AtomicU64::new(0);
-/// The slot-3 programs and the datum they were read for: read again when
-/// the rasterizer's datum changes (a new map).
-static PROGRAMS: Mutex<Option<(u32, Vec<Vec<u8>>)>> = Mutex::new(None);
-
-/// Whether `code` is one of the engine slot's programs read from the tags;
-/// `None` when they did not read.
-pub fn program_in_tags(code: &[u8]) -> Option<bool> {
-    let programs = PROGRAMS.lock().unwrap_or_else(|e| e.into_inner());
-    programs.as_ref().map(|(_, p)| native_render::decal_material::program_matches(p, code))
-}
-
-fn read_programs(mem: &dyn GuestMemory) {
-    use native_render::decal_material::{RASTERIZER, vertex_programs};
-    let word = |a: u32| mem.u32(a).ok();
-    let datum = word(RASTERIZER)
-        .and_then(|r| word(r.checked_add(0x5c)?))
-        .and_then(|t| word(t.checked_add(3 * 8 + 4)?));
-    let mut programs = PROGRAMS.lock().unwrap_or_else(|e| e.into_inner());
-    if datum.is_some() && programs.as_ref().map(|p| p.0) == datum {
-        return;
-    }
-    *programs = vertex_programs(&word, &|a, n| mem.bytes(a, n).ok());
-}
-
 /// The polygon offset constant the wrapper loaded (`[0x0045e48c]`), read at
 /// the callback's entry.
 pub fn offset_bits() -> u32 {
     OFFSET_BITS.load(Ordering::Relaxed) as u32
-}
-
-/// Whether the draw in `mode` is to be compared with the Rust material.
-pub fn proof_sample() -> bool {
-    PROOF.lock().unwrap_or_else(|e| e.into_inner()).sample()
-}
-
-/// Records a compared draw's differing fields.
-pub fn proof_record(fields: &[String]) {
-    PROOF.lock().unwrap_or_else(|e| e.into_inner()).record(fields);
-}
-
-/// Whether the Rust material is proven.
-pub fn material_proven() -> bool {
-    PROOF.lock().unwrap_or_else(|e| e.into_inner()).proven()
-}
-
-/// [`proof_counters`] with static names (each distinct name is leaked once).
-pub fn proof_rows() -> Vec<(&'static str, u64)> {
-    static NAMES: Mutex<BTreeMap<String, &'static str>> = Mutex::new(BTreeMap::new());
-    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
-    proof_counters()
-        .into_iter()
-        .map(|(n, v)| (*names.entry(n.clone()).or_insert_with(|| Box::leak(n.into_boxed_str())), v))
-        .collect()
-}
-
-/// `render.scene` rows: samples, clean samples, whether proven, and each
-/// differing field.
-pub fn proof_counters() -> Vec<(String, u64)> {
-    let p = PROOF.lock().unwrap_or_else(|e| e.into_inner());
-    let mut out = vec![
-        ("decal_material_sampled".to_owned(), p.sampled),
-        ("decal_material_clean".to_owned(), p.clean),
-        ("decal_material_mismatched".to_owned(), p.mismatched),
-        ("decal_material_proven".to_owned(), u64::from(p.proven())),
-    ];
-    out.extend(p.fields.iter().map(|(f, n)| (format!("decal_material_mismatch_{f}"), *n)));
-    out
 }
 
 /// `(examined draws, native candidates)` and the running refusal tally.
@@ -310,7 +194,6 @@ pub fn current() -> Option<(Mode, i16)> {
 }
 
 fn begin(mem: &dyn GuestMemory, list: i16) {
-    read_programs(mem);
     if let Ok(bits) = mem.u32(native_render::decal_material::OFFSET_CONSTANT_ADDRESS) {
         OFFSET_BITS.store(u64::from(bits), Ordering::Relaxed);
     }
@@ -445,24 +328,6 @@ mod tests {
         assert_eq!(pool_counts(&mem), Some((4, 10)));
         mem.set_i32(header + layout::ACTIVE_COUNT, 11).unwrap();
         assert_eq!(pool_counts(&mem), None);
-    }
-
-    #[test]
-    fn the_material_is_proven_after_eight_clean_samples_and_a_difference_resets_it() {
-        let mut p = Proof::default();
-        assert!(p.sample());
-        assert!((1..SAMPLE).all(|_| !p.sample()));
-        assert!(p.sample());
-        for _ in 0..CLEAN - 1 {
-            p.record(&[]);
-        }
-        assert!(!p.proven());
-        p.record(&[]);
-        assert!(p.proven());
-        p.record(&["combiner_w53".to_owned(), "render_0x4a".to_owned()]);
-        assert!(!p.proven());
-        assert_eq!((p.sampled, p.clean, p.mismatched), (CLEAN as u64 + 1, CLEAN as u64, 1));
-        assert_eq!(p.fields["combiner_w53"], 1);
     }
 
     #[test]
