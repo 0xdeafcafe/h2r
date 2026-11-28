@@ -151,7 +151,7 @@ fn write(rt: &Runtime, p: u32, data: &[u8]) -> Result<()> {
     if p == 0 && !data.is_empty() {
         return Err(10014);
     }
-    rt.memory().write_bytes(p, data, 1).map_err(|_| 10014)?;
+    rt.memory().write_bytes(p, data, 1).map_err(|_| 10014u32)?;
     note_write(p, data);
     Ok(())
 }
