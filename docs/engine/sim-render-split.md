@@ -38,7 +38,7 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 | 2 | Node matrices | `0x000bd610`: the section test at `0x000bd750`, the evaluation at `0x000bd7b2` | shared node matrices, body flag bit 30 cleared; marker lookup reads them | built: `tick_poses.rs` ([2](#2-node-matrices)) |
 | 3 | Shared random seed | object code `0x001032a0` reached from the render; `[0x004e7408]` | the tick's next random numbers | built: `render_rng.rs` ([3](#3-the-random-stream)) |
 | 4 | Flare visibility byte | writer `0x00020bb0`, reader `0x00020770` (its count read at `0x000207b0`'s call `0x00020840`) | a GPU sample count smoothed into byte 3 of each entry of the array at `0x0051f40c`. No tick code reads the byte; `object_new` reads the entries' heads to free an owner's flares | the renderer ([4](#4-the-flare-visibility-byte)) |
-| 5 | Push-buffer callback texels | insert `0x0002460e` in `0x000245c0`, callback `0x00024970`, texels through `0x003fdbc0` and `0x00024a70` | a luminance histogram at `0x0051ecf0` and six floats in the record `[0x00485890]`. Only `render_screen_effects` reads them: no tick reader | the renderer ([5](#5-the-push-buffer-callback)) |
+| 5 | Push-buffer callback texels | insert `0x0002460e` in `0x000245c0`, callback `0x00024970`, texels through `0x003fdbc0` and `0x00024a70` | none: the one call passes mode 0, so the insert is never reached | nobody, dead code ([5](#5-the-push-buffer-callback)) |
 | 6 | Render scratch in the arena | the gathers and the setup: object visit marks, object `+0xcc`, light render fields, lighting cache | the arena hash only (census class a: the tick does not read them) | the render-private store ([6](#6-render-scratch-and-stamps)) |
 | 7 | Particle view stamps | per-view update `0x00174420` | system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30` | the render-private store ([6](#6-render-scratch-and-stamps)) |
 | 8 | Animation cache | get `0x001237e0` from the render, request `0x001236f0` from the tick | use stamps `+0x14`; which clips are resident when the tick samples | the clip store ([6](#6-render-scratch-and-stamps)) |
@@ -95,12 +95,10 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 
 | | |
 |---|---|
-| Guest | `render_screen_effects` (`0x00013870`, called only from `render_scene_passes` `0x0002bcd0`) loads the record pointer `[0x00485890]`, stores the word `[0x00485600]` at `+0x1c` and runs `0x000245c0` with the record in ESI and the histogram `0x0051ecf0` in EAX. `0x000245c0` stores the histogram at `+0x18` and inlines one `InsertCallback` (`0x0002460e`: function `0x00024970`, context the record). The device writes the drawn targets back to guest memory and calls `0x00024970` ([d3d-timing.md](../graphics/d3d-timing.md), "Push-buffer callbacks"). |
-| What the callback stores | `0x003fdbc0` locks the surface `0x004b53ac` (or none, by `[0x004b5430]` and `[0x004b543d]`). `0x00024a70` zeroes the 256-float histogram and adds 1.0 at byte 0 of each texel of a 64 by 48 block; `0x00024b80` divides it by its sum; `0x00024c70` writes the record: a low and a high level and the mean at `+0x00`, `+0x04`, `+0x08`, and the three smoothed toward them and clamped at `+0x0c`, `+0x10`, `+0x14`. Nothing else: no global, no object (**E**). |
-| Sim readers | None. The histogram's address appears once in the image (`0x000138a3`) and `[0x00485890]` is loaded only by `0x00013870`; the record's readers are `0x00013870` (`+0x10`, into the post passes' terms), `0x000245c0` and `0x00024ee0`, and `0x00024970` and its three helpers are reached only through the push-buffer slot. None is in `game_tick`'s closure (**E**; `render_readback_readers`). Which store sets `[0x00485890]` is not found statically: no store names that address (**S**). |
-| Move | Native post owns the value: a GPU reduction of the display copy, kept in the render-private store and read by the post passes that used the callback's result. The insert at `0x0002460e` is cut with the typed post stage, so no target is written back for it. |
-| If the run-time census finds a tick reader | The stored value is produced in the tick from scene state (the lights and exposure terms the frame is drawn from), and the callback's result is discarded. |
-| Proof | Test: `round5.rs::through_the_runtime` keeps the device's delivery; a new test shows the arena equal across a frame whose target is black and one whose target is white. |
+| Guest | `render_screen_effects` (`0x00013870`) runs `0x000245c0` on the screen record `[0x00485890]` (ESI) and the histogram `0x0051ecf0` (EAX), with the mode in BX. A mode of 1 to 3 every eighth call draws the view into a 64x48 target (`0x000249f0`) and inserts `0x00024970` at `0x0002460e`. The callback builds a 256-float histogram of the block's first byte (`0x00024a70`), normalises it (`0x00024b80`) and writes six floats to the record (`0x00024c70`). Any other mode takes the reset at `0x00024642`: the record gets `{0, [0x0045dc2c], [0x0045dd30]}` (0, 0.75, 0.4) twice and the counter `+0x20` is 0. |
+| Sim readers | None. The record is read only by render code (`0x00013870`, `0x000245c0`, `0x00024ee0`), and the callback never runs: the one call of `0x000245c0` (`0x000138a8`) clears EBX first (`0x000138a1`), so every frame takes the reset. Nothing else branches to `0x000245c0` or holds its address, and `0x00024970` appears only as the insert's immediate (`0x00024617`). |
+| Move | None. The record's values are the reset's constants, written by the guest every frame, so the native renderer has no value to make and no texel is read back. The insert and the callback are dead guest code; the device's callback delivery (`runtime_glue::deliver_push_callback`) has no caller in Halo. |
+| Proof | Test: `engine/tests/screen_record_differential.rs` (needs the XBE): the call site and references by a scan of the image, and `0x000245c0` lifted from any record with BX 0 reaching the call of `0x00024ee0` with the reset's six floats, while BX 1 to 3 takes the insert path. |
 
 ### 6. Render scratch and stamps
 
@@ -123,7 +121,6 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 |---|---|---|
 | the render random seed | process | a session |
 | the flare state `0x0051f408..0x005234c8` and the owners' salts | entry | a map: dropped when the simulation's bytes or the map's name change |
-| the callback's reduction | view | a frame |
 | object overlay: pose for display, palettes, records, lighting, visit marks | object datum | a frame, or until the datum is reused |
 | particle view stamps | system datum | until the datum is reused |
 
@@ -153,7 +150,7 @@ Each is one lane of a day or less. A slice lands when its proof row passes; 11 w
 | 4 | Node matrices at tick end; the setup's pose path read-only | Opus | coupling 2 |
 | 5 | Render stream for every session; gameplay-bit draw in a frame is an error | Sonnet | coupling 3 |
 | 6 | Flare array and query in the render-private store, counts from the display depth | Opus | coupling 4 |
-| 7 | Callback value from native post; cut the insert | Opus | coupling 5 |
+| 7 | Callback reach: the one call passes mode 0, so the insert is dead | Opus | coupling 5 closed, nothing to move |
 | 8 | Object, light and cache scratch onto the overlay | Opus | coupling 6 |
 | 9 | Particle stamps to a side table; animation sampling off the guest cache | Opus | couplings 7 and 8 |
 | 10 | Counters from the tick driver in every mode; the render-blind gate in `h2 sim` and the ladder | Sonnet | coupling 9, the gate, coupling 10's answer |
@@ -179,8 +176,7 @@ Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 - Who sets body flag bit 30, and how many objects carry it at tick end.
 - That `0x000bd090` gives the matrices `0x000bd7b2` gave for the same object, machines included: the post update (`0x000bc820`) skips `0x000bd090` for type 7, and the tick-end build does not.
 - How a pending variant is marked in a channel, and whether an eager pick alters a channel the tick would have replaced before playing it.
-- That no tick code reached through an indirect call reads the flare state, the histogram or the callback's record: the static census follows direct calls and tail transfers only. The run-time census answers it.
-- Which store sets the callback record pointer `[0x00485890]`, and whether the record lies inside the hashed region.
+- That no tick code reached through an indirect call reads the flare state: the static census follows direct calls and tail transfers only. The run-time census answers it.
 - Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's four pools are written in a frame step, are open.
 - Arena writes made through another alias of a page: the watch sees them, the trap does not, so their writer reads `unseen`.
 - What the game-time bracket writes.
