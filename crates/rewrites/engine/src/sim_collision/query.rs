@@ -3,8 +3,9 @@
 //! and the agent's read-only trace use the same walk.
 use super::{CollisionMemory, CollisionWorld, Read, consts, layout};
 use runtime::CpuAbi;
-use sim_collision::{Bail, Bsp, GuestRead, Hit, Segment, bsp::NONE};
-use sim_core::det::{self, Fp};
+use sim_collision::{Bail, Bsp, GuestRead, Hit, Outcome, Segment, bsp::NONE};
+use sim_core::det::{Fp, X87};
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 mod batch;
@@ -61,13 +62,63 @@ impl Ray {
         (self.flags >> 23) & 63
     }
 
-    fn position(self, fraction: u32) -> Result<[u32; 3], Bail> {
-        let mut fp = Fp::new();
+    fn position(self, env: &mut Env, fraction: u32) -> Result<[u32; 3], Bail> {
         let pos = std::array::from_fn(|i| {
-            let d = fp.mul(self.delta[i], fraction);
-            fp.add(d, self.start[i])
+            let d = env.fp.mul(self.delta[i], fraction);
+            env.fp.add(d, self.start[i])
         });
-        fp.exact().then_some(pos).ok_or(Bail::Float)
+        env.exact()?;
+        Ok(pos)
+    }
+}
+
+/// J's floating-point state: its SSE work on [`Fp::guest`] under the
+/// caller's MXCSR, its x87 work on [`X87`] under the caller's control
+/// word. Every operand runs as the guest's instructions do; the flags they
+/// raise go to the CPU when the plan commits.
+pub(super) struct Env {
+    pub(super) fp: Fp,
+    pub(super) x87: X87,
+}
+
+impl Env {
+    fn new(cpu: &CpuAbi) -> Self {
+        Self {
+            fp: Fp::guest(cpu.mxcsr),
+            x87: X87::new(cpu.x87.control),
+        }
+    }
+
+    /// Only an unmasked exception, which [`super::vector_env`] excludes,
+    /// leaves the model.
+    pub(super) fn exact(&self) -> Result<(), Bail> {
+        if self.fp.exact() { Ok(()) } else { Err(Bail::Env) }
+    }
+
+    /// The guest's MXCSR so far.
+    pub(super) fn mxcsr(&self) -> u32 {
+        self.fp.mxcsr().unwrap_or_default()
+    }
+
+    /// Fold in the flags a sub-entry raised: `mxcsr` its MXCSR after the
+    /// call, `x87` its x87 exception flags.
+    pub(super) fn absorb(&mut self, mxcsr: u32, x87: u16) {
+        self.fp.raise(mxcsr & 0x3f);
+        self.x87.raise_bits(x87);
+    }
+
+    /// Entry C's walk (`0x1de630`) under this state.
+    pub(super) fn vector_test(
+        &mut self,
+        b: &Bsp,
+        g: &impl GuestRead,
+        q: &Segment,
+        t1: u32,
+    ) -> Result<Outcome, Bail> {
+        let mxcsr = self.mxcsr();
+        let out = b.vector_test_under(mxcsr, self.x87.control(), g, q, 0, 0, t1)?;
+        self.absorb(out.mxcsr.unwrap_or(mxcsr), out.x87_flags);
+        Ok(out)
     }
 }
 
@@ -108,16 +159,22 @@ impl Record {
         std::array::from_fn(|i| self.word(0x28 + 4 * i))
     }
 
-    fn put_plane(&mut self, p: [u32; 4], flip: bool) -> Result<(), Bail> {
-        let mut fp = Fp::new();
+    /// `0 - x` per word (`subss`) when flipped.
+    fn put_plane(&mut self, env: &mut Env, p: [u32; 4], flip: bool) -> Result<(), Bail> {
         for (i, x) in p.into_iter().enumerate() {
-            let x = if flip { fp.sub(0, x) } else { x };
+            let x = if flip { env.fp.sub(0, x) } else { x };
             self.put(0x28 + 4 * i as u32, x);
         }
-        fp.exact().then_some(()).ok_or(Bail::Float)
+        env.exact()
     }
 
-    fn structure_hit(&mut self, g: &impl GuestRead, structure: u32, h: Hit) -> Result<(), Bail> {
+    fn structure_hit(
+        &mut self,
+        env: &mut Env,
+        g: &impl GuestRead,
+        structure: u32,
+        h: Hit,
+    ) -> Result<(), Bail> {
         let material = match h.material as i16 {
             -1 => DEFAULT_MATERIAL,
             n if n >= 0 => g
@@ -128,7 +185,7 @@ impl Record {
         self.put(0, 1);
         self.put(4, h.fraction);
         self.store(0x24, &g.u16(material)?.to_le_bytes());
-        self.put_plane(plane_at(g, h.plane_addr)?, h.plane & 0x8000 != 0)?;
+        self.put_plane(env, plane_at(g, h.plane_addr)?, h.plane & 0x8000 != 0)?;
         self.put(0x4c, h.leaf);
         self.put(0x50, h.surface);
         self.put(0x54, h.plane);
@@ -175,6 +232,9 @@ struct Plan {
     record: Record,
     flags: u32,
     marks: clusters::Marks,
+    /// The guest's MXCSR afterwards and the x87 exception flags raised.
+    mxcsr: u32,
+    x87: u16,
 }
 
 fn plan(
@@ -201,33 +261,25 @@ fn plan(
     let index = m.u16(layout::BSP_INDEX)? as i16;
     let one = m.u32(layout::ONE)?;
     let limit = m.u32(SEGMENT_LIMIT)?;
-    // The image's limit is `FLT_MAX`: it is only compared, and the walk
-    // runs to the ordinary `min(limit, 1)`.
-    let mut fp = Fp::new();
-    fp.check_compared(limit);
-    fp.check(one);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
+    // The image's limit is `FLT_MAX`; the walk runs to `min(limit, 1)`.
+    let mut env = Env::new(cpu);
     let addr = m.u32(SEGMENT_BSP)?;
     let mask = m
         .u32(BREAKABLES)?
         .wrapping_add((i32::from(index) as u32).wrapping_mul(32))
         .wrapping_add(1);
-    let fraction = if det::compare(limit, 0).is_lt() {
+    // Ordered tests: a NaN limit is neither clamped.
+    let fraction = if env.fp.comiss(limit, 0) == Some(Ordering::Less) {
         0
     } else {
         limit
     };
-    let t1 = if det::compare(fraction, one).is_gt() {
+    let t1 = if env.fp.comiss(fraction, one) == Some(Ordering::Greater) {
         one
     } else {
         fraction
     };
-    fp.check(t1);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
+    env.exact()?;
     let query = Segment {
         flags: ray.filter(),
         start: ray.start,
@@ -242,7 +294,7 @@ fn plan(
     };
     let b = bsp(g, world, addr)?;
     let m = Read(&*g, (0, 0));
-    let outcome = b.vector_test(&m, &query, 0, 0, t1)?;
+    let outcome = env.vector_test(&b, &m, &query, t1)?;
     record.put(0, 0);
     record.put(4, one);
     let nowhere = location(&m, structure, index, NONE)?;
@@ -252,7 +304,7 @@ fn plan(
         record.put(offset, NONE);
     }
     if let Some(hit) = outcome.hit.filter(|_| ray.flags & 1 != 0) {
-        record.structure_hit(&m, structure, hit)?;
+        record.structure_hit(&mut env, &m, structure, hit)?;
     }
     // R's overflow slot is outside the list J consumes. After 256 leaves
     // even the last location is the 256th listed leaf, not the overflow.
@@ -271,6 +323,7 @@ fn plan(
             }
             marks.walk(
                 cpu,
+                &mut env,
                 g,
                 world,
                 structure,
@@ -282,14 +335,16 @@ fn plan(
             )?;
         }
     }
-    record.set_position(ray.position(record.word(4))?);
+    record.set_position(ray.position(&mut env, record.word(4))?);
     if ray.flags & RELOCATE != 0 && record.word(0) != 0 {
-        relocate::nudge(g, world, ray, structure, index, hit_bsp, &mut record)?;
+        relocate::nudge(&mut env, g, world, ray, structure, index, hit_bsp, &mut record)?;
     }
     Ok(Plan {
         record,
         flags: ray.flags,
         marks,
+        mxcsr: env.mxcsr(),
+        x87: env.x87.flags(),
     })
 }
 

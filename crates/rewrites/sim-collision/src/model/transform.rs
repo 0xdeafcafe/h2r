@@ -1,7 +1,7 @@
 //! Use 141590 for the inverse of an instance or an object node. When
 //! 1eff40 applies it, output X sums Y, X, Z; the other rows sum Z, Y, X.
 use crate::{Bail, GuestRead, instance::PlacementMatrix};
-use sim_core::det::{self, Fp};
+use sim_core::det::Fp;
 
 pub(super) fn matrix(g: &impl GuestRead, at: u32) -> Result<PlacementMatrix, Bail> {
     let mut bytes = [0; 52];
@@ -11,16 +11,20 @@ pub(super) fn matrix(g: &impl GuestRead, at: u32) -> Result<PlacementMatrix, Bai
     })))
 }
 
-pub(super) fn local_ray(
+/// The ray in node space, in the caller's `fp` ([`Fp::guest`] runs any
+/// operand; [`Fp::new`] leaves [`Fp::exact`] false off the exact path).
+pub(super) fn local_ray_with(
+    fp: &mut Fp,
     matrix: PlacementMatrix,
     one: u32,
     start: [u32; 3],
     delta: [u32; 3],
-) -> Result<([u32; 3], [u32; 3]), Bail> {
-    let inv = matrix.inverse(one)?.words();
-    let mut fp = Fp::new();
+) -> ([u32; 3], [u32; 3]) {
+    let inv = matrix.inverse_with(fp, one).words();
     let mut local = |mut v: [u32; 3], point: bool| {
-        if !det::compare(inv[0], one).is_eq() {
+        // `ucomiss scale, one; lahf; test ah, 44h; jnp`: only an ordered
+        // equal skips the scale.
+        if fp.ucomiss(inv[0], one) != Some(std::cmp::Ordering::Equal) {
             v = v.map(|n| fp.mul(n, inv[0]));
         }
         std::array::from_fn(|i| {
@@ -37,8 +41,7 @@ pub(super) fn local_ray(
             if point { fp.add(n, inv[10 + i]) } else { n }
         })
     };
-    let ray = (local(start, true), local(delta, false));
-    fp.exact().then_some(ray).ok_or(Bail::Float)
+    (local(start, true), local(delta, false))
 }
 
 #[cfg(test)]
@@ -53,7 +56,9 @@ mod tests {
         // Adding one to -2^26 loses it; the cancelling pair recovers it
         // only on X, where the two large terms are added first.
         let v = [67108864., -67108864., 1.0].map(f32::to_bits);
-        let (start, delta) = local_ray(matrix, words[0], v, v).unwrap();
+        let mut fp = Fp::new();
+        let (start, delta) = local_ray_with(&mut fp, matrix, words[0], v, v);
+        assert!(fp.exact());
         assert_eq!(start, [words[0], 0, 0]);
         assert_eq!(delta, start);
     }

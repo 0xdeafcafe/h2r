@@ -6,7 +6,9 @@ use super::*;
 const NUDGE: u32 = 0x0045_de54;
 const PARALLEL_STEP: u32 = 0x0045_de50;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn nudge(
+    env: &mut Env,
     g: &mut impl CollisionMemory,
     world: &CollisionWorld,
     ray: Ray,
@@ -41,7 +43,10 @@ pub(super) fn nudge(
     }
     let primary_addr = m.u32(layout::STRUCTURE_BSP)?;
     let primary = bsp(g, world, primary_addr)?;
-    let primary_matches = last == NONE || primary.point_to_leaf(0, pos)? == last;
+    let leaf = |env: &mut Env, b: &Bsp, pos| -> Result<u32, Bail> {
+        Ok(b.point_result_with(&mut env.fp, 0, pos)?.leaf)
+    };
+    let primary_matches = last == NONE || leaf(&mut *env, &primary, pos)? == last;
     if primary_matches && (model.is_none() || model_leaf == NONE) {
         return Ok(());
     }
@@ -49,7 +54,7 @@ pub(super) fn nudge(
     if primary_matches
         && model
             .as_ref()
-            .map(|b| b.point_to_leaf(0, pos))
+            .map(|b| leaf(&mut *env, b, pos))
             .transpose()?
             == Some(model_leaf)
     {
@@ -59,69 +64,59 @@ pub(super) fn nudge(
     let displacement = m.u32(NUDGE)?;
     let plane = record.plane();
     let normal = [plane[0], plane[1], plane[2]];
-    let mut fp = Fp::new();
     for axis in 0..3 {
-        let offset = fp.mul(normal[axis], displacement);
-        pos[axis] = fp.add(offset, pos[axis]);
+        let offset = env.fp.mul(normal[axis], displacement);
+        pos[axis] = env.fp.add(offset, pos[axis]);
     }
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    let locate = |pos| -> Result<Location, Bail> {
-        let leaf = if index == -1 {
-            NONE
-        } else {
-            primary.point_to_leaf(0, pos)?
-        };
+    env.exact()?;
+    let locate = |env: &mut Env, pos| -> Result<Location, Bail> {
+        let leaf = if index == -1 { NONE } else { leaf(&mut *env, &primary, pos)? };
         location(&m, structure, index, leaf)
     };
-    let valid = |loc: Location, pos| -> Result<bool, Bail> {
+    let valid = |env: &mut Env, loc: Location, pos| -> Result<bool, Bail> {
         Ok(loc.leaf != NONE
             && model
                 .as_ref()
-                .map(|b| b.point_to_leaf(0, pos))
+                .map(|b| leaf(&mut *env, b, pos))
                 .transpose()?
                 .is_none_or(|leaf| leaf != NONE))
     };
     record.set_position(pos);
-    let loc = locate(pos)?;
+    let loc = locate(&mut *env, pos)?;
     record.put_location(0x1c, loc);
-    if valid(loc, pos)? {
+    if valid(&mut *env, loc, pos)? {
         return Ok(());
     }
-    let d = clusters::dot(&mut fp, normal, ray.delta);
-    fp.check(d);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    let step = if d & 0x7fff_ffff == 0 {
+    let d = clusters::dot(&mut env.fp, normal, ray.delta);
+    // `ucomiss d, 0; lahf; test ah, 44h; jnp`: only an ordered zero takes
+    // the parallel step. Otherwise `fld d; fabs; fdivr m32; fstp m32`
+    // divides on the x87 under the caller's control word.
+    let step = if env.fp.ucomiss(d, 0) == Some(Ordering::Equal) {
         m.u32(PARALLEL_STEP)?
     } else {
-        // The x87 quotient of two ordinary binary32 values rounds to this
-        // binary32 result under all three admitted precision controls.
-        fp.div(displacement, d & 0x7fff_ffff)
+        let x = &env.x87;
+        let q = x.div(x.load32(displacement), x.abs(x.load32(d)));
+        x.store32(q)
     };
     // Limit work on malformed inputs or a displacement too small to move t.
     for _ in 0..4096 {
-        let next = fp.sub(record.word(4), step);
-        fp.check(next);
-        if !fp.exact() {
-            return Err(Bail::Float);
-        }
-        let t = if det::compare(next, 0).is_gt() {
+        let next = env.fp.sub(record.word(4), step);
+        // `comiss next, 0; ja`: a NaN or non-positive time is zero.
+        let t = if env.fp.comiss(next, 0) == Some(Ordering::Greater) {
             next
         } else {
             0
         };
+        env.exact()?;
         if t == record.word(4) && t != 0 {
             return Err(Bail::Depth);
         }
-        let pos = ray.position(t)?;
-        let loc = locate(pos)?;
+        let pos = ray.position(env, t)?;
+        let loc = locate(&mut *env, pos)?;
         record.put(4, t);
         record.set_position(pos);
         record.put_location(0x1c, loc);
-        if t == 0 || valid(loc, pos)? {
+        if t == 0 || valid(&mut *env, loc, pos)? {
             return Ok(());
         }
     }

@@ -86,6 +86,7 @@ fn prepare(
         from: vec4(&m, input)?,
         to: vec4(&m, input.wrapping_add(l::INPUT_TO))?,
         precision,
+        mxcsr: c.mxcsr,
         constants,
     };
     let root = ray.root()?;

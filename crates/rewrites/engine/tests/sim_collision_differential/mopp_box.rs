@@ -23,10 +23,11 @@ const MOPP_BOX: Entry = Entry {
     dead: (layout::mopp_box::DEAD_BELOW, 0),
 };
 
-/// Masked, nearest single and double: the controls F answers in.
-const SUPPORTED: [u16; 2] = [0x027f, 0x007f];
-/// Extended precision, round up, an unmasked invalid: F declines.
-const DECLINED: [u16; 3] = [0x037f, 0x0a7f, 0x027e];
+/// Masked, nearest single, double and extended: the controls F answers in
+/// (extended on the x87 model).
+const SUPPORTED: [u16; 3] = [0x027f, 0x007f, 0x037f];
+/// Round up, an unmasked invalid: the environment F declines.
+const DECLINED: [u16; 2] = [0x0a7f, 0x027e];
 
 /// A program and where its full-precision space sits in the world.
 fn program(rng: &mut Rng, n: u32) -> Code {
@@ -143,9 +144,9 @@ fn setup<'a>(image: &'a [u8], rng: &mut Rng, code: &Code, b: &Aabb) -> (CpuAbi, 
     c.esp = sp;
     c.ecx = VM;
     c.x87.control = if rng.chance(5) {
-        DECLINED[rng.below(3) as usize]
+        DECLINED[rng.below(2) as usize]
     } else {
-        SUPPORTED[rng.below(2) as usize]
+        SUPPORTED[rng.below(3) as usize]
     };
     // Half enter with PE clear, as the live game does: the setup's
     // conversions set it as the guest's would.

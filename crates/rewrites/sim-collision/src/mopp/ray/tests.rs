@@ -35,6 +35,7 @@ fn ray(from: [f32; 3], to: [f32; 3], precision: Precision) -> Ray {
         from: [f(from[0]), f(from[1]), f(from[2]), 0],
         to: [f(to[0]), f(to[1]), f(to[2]), 0],
         precision,
+        mxcsr: 0x1fa0,
         constants: constants(),
     }
 }
@@ -537,24 +538,36 @@ fn deep_nesting_bails() {
 }
 
 #[test]
-fn values_off_the_fast_path_bail() {
+fn values_off_the_fast_path_run_as_the_guest() {
+    // A NaN start: the packed work carries it (a quiet NaN raises nothing).
     let nan = ray([f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], Precision::Single);
-    assert_eq!(nan.root(), Err(Bail::Float));
+    let root = nan.root().unwrap();
+    assert!(f32::from_bits(root.segment.start[0]).is_nan());
+    // A subnormal start raises DE in the MXCSR.
     let tiny = ray([1.0e-40, 0.0, 0.0], [1.0, 0.0, 0.0], Precision::Single);
-    assert_eq!(tiny.root(), Err(Bail::Float));
+    assert_ne!(tiny.root().unwrap().raised.mxcsr & 0x02, 0);
+    // A zero scale divides by zero on the x87: ZE, an infinite inverse.
     let mut zero_scale = along_x(0.0, 1.0);
     zero_scale.origin[3] = 0;
-    assert_eq!(zero_scale.root(), Err(Bail::Float));
-    // A fraction that is not a number is never compared.
+    let root = zero_scale.root().unwrap();
+    assert_ne!(root.raised.x87 & 0x04, 0);
+    assert_eq!(root.inverse_scale, f32::INFINITY.to_bits());
+    // A fraction that is not a number compares unordered: every return
+    // site's ordered-less test fails, as the guest's `test ah, 5; jp`.
     let nan_fraction = events(&SPLIT, along_x(0.0, 40.0), |_, _| f(f32::NAN));
-    assert_eq!(nan_fraction, Err(Bail::Float));
+    assert!(nan_fraction.is_ok());
+    // Extended precision runs on the model and agrees on exact values.
+    let mut ext = along_x(0.0, 40.0);
+    ext.precision = Precision::Extended;
+    assert_eq!(events(&SPLIT, ext, misses), events(&SPLIT, along_x(0.0, 40.0), misses));
 }
 
 #[test]
 fn precision_comes_from_a_masked_nearest_control() {
     assert_eq!(Precision::from_control(0x007f), Ok(Precision::Single));
     assert_eq!(Precision::from_control(0x027f), Ok(Precision::Double));
-    for control in [0x037f, 0x017f, 0x0a7f, 0x027e, 0x067f] {
+    assert_eq!(Precision::from_control(0x037f), Ok(Precision::Extended));
+    for control in [0x017f, 0x0a7f, 0x027e, 0x067f] {
         assert_eq!(
             Precision::from_control(control),
             Err(Bail::Env),

@@ -193,6 +193,14 @@ fn no_cluster_visits_nothing_and_no_radius_visits_one_cluster() {
         ..query()
     };
     assert_eq!(run(&w, &nan), Err(Bail::Float));
+    // Under the guest's MXCSR a NaN radius is not above zero (`comiss`
+    // unordered, IE), so one cluster is visited, as for no radius.
+    let (v, raised) = object_visit_guest(&w.img, &nan, 0x1f80, || {
+        Ok(Arc::new(Topology::decode(&w.img, w.key, &CONSTS.projection)?))
+    })
+    .unwrap();
+    assert!(v.flood.is_none());
+    assert_ne!(raised.mxcsr & 0x01, 0);
 }
 
 #[test]

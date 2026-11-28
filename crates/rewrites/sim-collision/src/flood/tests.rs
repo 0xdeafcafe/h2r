@@ -264,6 +264,39 @@ fn an_unreadable_portal_list_declines_the_cluster_not_the_decode() {
     assert_eq!(t.cluster_flood(&img, &query(0, [0.5, 0.0, 0.0], 5.0)), Err(Bail::Fault));
 }
 
+/// Under the guest's state the cases the checked path declines run, as
+/// the guest's instructions do.
+#[test]
+fn the_guest_flood_runs_what_the_checked_path_declines() {
+    let p = row(2);
+    let (img, t) = decode(&p);
+    let guest = |q: &FloodQuery| t.cluster_flood_guest(&img, q, 0x1f80);
+    // On the checked path both agree.
+    let plain = query(0, [0.5, 0.0, 0.0], 0.75);
+    assert_eq!(guest(&plain).unwrap().0, t.cluster_flood(&img, &plain).unwrap());
+    // A subnormal centre: DE on the x87 load, and the same flood.
+    let tiny = guest(&query(0, [0.5, f32::from_bits(1), 0.0], 0.75)).unwrap();
+    assert_eq!(tiny.0.clusters, t.cluster_flood(&img, &plain).unwrap().clusters);
+    assert_ne!(tiny.1.x87 & 0x02, 0);
+    // A NaN centre: the distance is unordered, `jbe` is taken, no portal
+    // passes, and `fcomip` raises IE.
+    let nan = guest(&query(0, [f32::NAN, 0.0, 0.0], 0.75)).unwrap();
+    assert_eq!(nan.0.clusters, [0]);
+    assert_ne!(nan.1.x87 & 0x01, 0);
+    // Extended precision runs on the model.
+    let ext = FloodQuery {
+        control: 0x037f,
+        ..plain
+    };
+    assert_eq!(guest(&ext).unwrap().0.clusters, t.cluster_flood(&img, &plain).unwrap().clusters);
+    // A subnormal normal component decodes, and its load raises DE.
+    let mut p = row(3);
+    p.planes[1] = [1.0, f32::from_bits(3), 0.0, 2.0];
+    let (img, t) = decode(&p);
+    let r = t.cluster_flood_guest(&img, &query(0, [0.5, 0.0, 0.0], 0.75), 0x1f80).unwrap();
+    assert_ne!(r.1.x87 & 0x02, 0);
+}
+
 #[test]
 fn a_projection_is_needed_only_past_the_plane_and_sphere_tests() {
     // Wall 2's normal has a subnormal component. The distance plane and the

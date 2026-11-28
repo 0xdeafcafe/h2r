@@ -11,7 +11,7 @@ use crate::sim_collision::{
 use crate::sim_native::Memory;
 use guest_layout::entry::GuestCall;
 use runtime::CpuAbi;
-use sim_collision::mopp::ray::{Constants, Event, Precision, RayWalk};
+use sim_collision::mopp::ray::{Constants, Event, Precision, Raised, RayWalk};
 use sim_collision::{Bail, CollisionWorld, GuestRead};
 use sim_core::det;
 
@@ -157,6 +157,12 @@ impl CollectorCast {
         })
     }
 
+    /// The MXCSR and x87 exception flags the walk has left so far: the
+    /// caller puts them in the CPU before each callback and at the return.
+    pub fn raised(&self) -> Raised {
+        self.walk.raised()
+    }
+
     fn vm_word(&self, m: &impl Memory, off: u32) -> Result<u32, Bail> {
         m.u32(self.vm.wrapping_add(off)).map_err(|_| Bail::Fault)
     }
@@ -241,6 +247,9 @@ impl CollectorCast {
             return Err(Bail::Env);
         }
         self.setup.check_walk_inputs(g)?;
+        // The callbacks ran under the flags the walk had raised; the walk
+        // goes on from what they left.
+        self.walk.absorb(cpu.mxcsr, cpu.x87.status);
         let fraction = self.vm_word(g, l::FRACTION)?;
         while let Some(step) = self.walk.next(fraction)? {
             let Event::Key(key) = step else { continue };

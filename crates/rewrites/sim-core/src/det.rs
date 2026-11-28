@@ -20,11 +20,15 @@
 //! When any input fails, [`Fp::exact`] is false and the caller must
 //! discard the results and let the original code run.
 mod chain;
+mod guest87;
 mod host;
 mod region;
 
 pub use chain::Chain;
-pub use region::{Checked, checked, checked_env, checked_guest_env, checked_inputs, host_fast_env};
+pub use guest87::{St, X87};
+pub use region::{
+    Checked, checked, checked_env, checked_guest, checked_guest_env, checked_inputs, host_fast_env,
+};
 
 use crate::lanes::{self, Op, Vec4};
 
@@ -172,6 +176,25 @@ impl Fp {
         if self.guest.is_some() && !self.strict {
             self.check(a);
             self.check(b);
+        } else {
+            self.check_compared(a);
+            self.check_compared(b);
+        }
+        comiss(a, b)
+    }
+
+    /// `ucomiss a, b`: [`Fp::comiss`], but under [`Fp::guest`] only a
+    /// signalling NaN raises IE (a subnormal still raises DE).
+    #[inline]
+    pub fn ucomiss(&mut self, a: u32, b: u32) -> Option<std::cmp::Ordering> {
+        if self.guest.is_some() && !self.strict {
+            for x in [a, b] {
+                let bits = x & 0x7fff_ffff;
+                let quiet_nan = bits > 0x7f80_0000 && bits & 0x0040_0000 != 0;
+                if !quiet_nan {
+                    self.check(x);
+                }
+            }
         } else {
             self.check_compared(a);
             self.check_compared(b);
@@ -555,6 +578,21 @@ mod tests {
         // Off guest the same operands decline.
         let mut fp = Fp::new();
         assert_eq!(fp.comiss(0x7fc0_0000, 0), None);
+        assert!(!fp.exact());
+    }
+
+    #[test]
+    fn guest_ucomiss_raises_ie_only_for_a_signalling_nan() {
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.ucomiss(0x7fc0_0000, 0), None);
+        assert_eq!(fp.mxcsr(), Some(0x1f80));
+        assert_eq!(fp.ucomiss(0x7fa0_0000, 0), None);
+        assert_ne!(fp.mxcsr().unwrap() & simd::IE, 0);
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.ucomiss(1, 0), Some(std::cmp::Ordering::Greater));
+        assert_ne!(fp.mxcsr().unwrap() & simd::DE, 0);
+        let mut fp = Fp::new();
+        assert_eq!(fp.ucomiss(0x7fc0_0000, 0), None);
         assert!(!fp.exact());
     }
 

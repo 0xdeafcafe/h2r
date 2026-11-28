@@ -126,6 +126,10 @@ pub struct Prediction {
     /// First encounter of each unmarked key, even when its placement misses.
     pub marks: Vec<(u32, u32)>,
     pub hit: Option<InstanceHit>,
+    /// The guest's MXCSR after the trace and the x87 exception flags it
+    /// raised, for the commit.
+    pub mxcsr: u32,
+    pub x87: u16,
 }
 
 pub struct InstanceHit {
@@ -209,6 +213,7 @@ fn four(m: &impl GuestRead, addr: u32) -> Result<[u32; 4], Bail> {
     Ok([x, y, z, m.u32(addr.wrapping_add(12))?])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn placement(
     g: &mut impl CollisionMemory,
     world: &CollisionWorld,
@@ -217,6 +222,9 @@ fn placement(
     key: u32,
     limit: u32,
     one: u32,
+    control: u16,
+    fp: &mut Fp,
+    x87: &mut u16,
 ) -> Result<Option<InstanceHit>, Bail> {
     let m = Read(&*g, (0, 0));
     let at = record(&m, structure.wrapping_add(0x140), key, 0x58)?;
@@ -232,12 +240,12 @@ fn placement(
         center: m.vec3(at.wrapping_add(0x3c))?,
         radius: m.u32(at.wrapping_add(0x48))?,
     };
-    let offset = s.offset(q.start)?;
-    if !offset.contains_start() && !offset.sweep(q.delta)?.hit() {
+    let offset = s.offset_with(fp, q.start)?;
+    if !offset.contains_start() && !offset.sweep_with(fp, q.delta)?.hit() {
         return Ok(None);
     }
     let matrix = PlacementMatrix::read(&m, at)?;
-    let (start, delta) = matrix.local_ray(one, q.start, q.delta)?;
+    let (start, delta) = matrix.local_ray_with(fp, one, q.start, q.delta);
     let index = m.u16(layout::BSP_INDEX)? as i16;
     let mask = m
         .u32(BREAKABLE_BASE)?
@@ -248,12 +256,14 @@ fn placement(
     let rev = g.bsp_revision(addr)?;
     let m = Read(&*g, rev);
     let bsp = world.bsp(&m, addr, || consts(&m))?;
-    let fraction = if det::compare(limit, 0) == Ordering::Less {
+    // `comiss 0, limit; ja` and `comiss fraction, one; ja`: an unordered
+    // limit passes through both.
+    let fraction = if fp.comiss(0, limit) == Some(Ordering::Greater) {
         0
     } else {
         limit
     };
-    let end = if det::compare(fraction, one) == Ordering::Greater {
+    let end = if fp.comiss(fraction, one) == Some(Ordering::Greater) {
         one
     } else {
         fraction
@@ -270,7 +280,11 @@ fn placement(
         prev_kind: 0,
         plane: NONE,
     };
-    let Some(surface) = bsp.vector_test(&m, &query, 0, 0, end)?.hit else {
+    let mxcsr = fp.mxcsr().unwrap_or_default();
+    let walk = bsp.vector_test_under(mxcsr, control, &m, &query, 0, 0, end)?;
+    fp.raise(walk.mxcsr.unwrap_or(mxcsr) & 0x3f);
+    *x87 |= walk.x87_flags;
+    let Some(surface) = walk.hit else {
         return Ok(None);
     };
     let material = if surface.material == u16::MAX {
@@ -279,7 +293,7 @@ fn placement(
         let row = record(&m, structure.wrapping_add(0xc), surface.material.into(), 20)?;
         m.u16(row.wrapping_add(8))?
     };
-    let plane = matrix.plane(four(&m, surface.plane_addr)?, surface.plane & 0x8000 != 0)?;
+    let plane = matrix.plane_with(fp, four(&m, surface.plane_addr)?, surface.plane & 0x8000 != 0);
     Ok(Some(InstanceHit {
         key,
         surface,
@@ -348,12 +362,10 @@ fn predict<G: CollisionMemory>(
         unit: four(&m, ray_layout::UNIT)?,
         root_scale: m.u32(ray_layout::ROOT_SCALE)?,
     };
-    let mut fp = Fp::new();
-    fp.check(q.limit);
+    // Every SSE operation of the trace under the guest's MXCSR, for any
+    // operand; only an unmasked exception (ruled out above) refuses.
+    let mut fp = Fp::guest(c.mxcsr);
     let end: [u32; 3] = std::array::from_fn(|i| fp.add(q.start[i], q.delta[i]));
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
     let ray = Ray {
         origin: [
             source.origin[0],
@@ -365,8 +377,10 @@ fn predict<G: CollisionMemory>(
         to: [end[0], end[1], end[2], 0],
         constants,
         precision,
+        mxcsr: fp.mxcsr().unwrap_or(c.mxcsr),
     };
     let mut walk = RayWalk::new(source.bytecode.as_slice(), ray, &ray.root()?);
+    let mut x87 = 0u16;
     let mut seen: BTreeSet<u32> = already_marked.iter().copied().collect();
     let mut fraction = q.limit;
     let mut limit = q.limit;
@@ -385,15 +399,23 @@ fn predict<G: CollisionMemory>(
             continue;
         }
         prediction.marks.push((mark, epoch));
-        if let Some(hit) = placement(g, world, &q, structure, key, limit, constants.one)? {
+        let hit = placement(g, world, &q, structure, key, limit, constants.one, c.x87.control, &mut fp, &mut x87)?;
+        if let Some(hit) = hit {
             limit = hit.fraction();
             prediction.hit = Some(hit);
             if q.flags & 0x1000_0000 != 0 {
                 fraction = 0;
-            } else if det::compare(limit, fraction) == Ordering::Less {
+            } else if fp.comiss(limit, fraction) == Some(Ordering::Less) {
                 fraction = limit;
             }
         }
     }
+    if !fp.exact() {
+        return Err(Bail::Env);
+    }
+    // Flags are sticky: the walk's and the placements' fold in any order.
+    let raised = walk.raised();
+    prediction.mxcsr = fp.mxcsr().unwrap_or(c.mxcsr) | (raised.mxcsr & 0x3f);
+    prediction.x87 = (x87 | raised.x87) & 0x3f;
     Ok(prediction)
 }
