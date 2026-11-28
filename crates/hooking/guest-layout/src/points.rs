@@ -1132,8 +1132,11 @@ points! { ALL;
     RENDER_FRAME_LOOP @ 0x0012_b6f0: [opaque]; "docs/graphics/retire-d3d-display.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
-    /// Water compositing after the scene's layer 6.
-    WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/native-water-fog.md";
+    /// The water end after the scene's layer 6 (`0x0002c132`): the ocean
+    /// of the active BSP's first water definition, drawn when the first
+    /// argument's byte is set, the bound target's alpha cleared before it
+    /// when the second's is. Two stack arguments, `ret 8`, AL 1.
+    WATER_TEARDOWN @ 0x0003_c3c0: [opaque]; "docs/graphics/retire-d3d-display.md";
     /// Selects the current view's sky and draws its model. Reads no
     /// arguments and returns with `ret` (`h2 disasm 0x3ede0`), so the
     /// sky's cut passes over it (`render_bridge::native_sky::before_sky`).

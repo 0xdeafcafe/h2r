@@ -223,6 +223,36 @@ No guest body of the tail runs. A tail it does not cover panics, named `frame_ta
 
 No guest body of the finish runs. A finish the cut cannot make panics, named `frame_finish: <cause>`: `host`, `device` (a refused set), `release` (the last reference), `unread`, `unwritable`. `render.scene` counts `frame_finish_calls`.
 
+## The water end
+
+`0x0003c3c0` (two stack arguments, `ret 8`, AL 1), the late passes' call after layer 6 (`0x0002c132`), is Rust with the native renderer (`render_bridge::water_end`, placed by `native-water`, `points::WATER_TEARDOWN`). The late passes pass `(1, al)`, AL the setup wrapper `0x0003ba90`'s, when bit 4 of `0x004b9fe0` is clear, and `(0, 0)` when it is set. No guest body runs.
+
+| Guest (Code, `0x0003c3c0..0x0003c3f6`) | Rust |
+|---|---|
+| the active BSP `[0x004e0348]`'s water definition count `+0x214` at or below 0 | `End::NoWater`: return |
+| the first definition `[bsp + 0x218]`'s `+0x7c` equal (`ucomiss`) to `[0x0045dbd8]`, 0.0 | `End::Still`: return |
+| the first argument's byte 0 | `End::NotDrawn`: return |
+| otherwise the ocean | `End::Ocean`: `water end: ocean` |
+
+A return leaves EAX the BSP pointer under AL 1 and ECX the count, as the guest's does.
+
+What the ocean would do, in order, for the stage that replaces the panic (Code, `0x0003c3ff..0x0003c632`):
+
+| Step | Guest |
+|---|---|
+| grid | `0x0003ca90(eax = definition)`: the camera-attached grid's rows and aspect ([high-resolution-widescreen.md](high-resolution-widescreen.md)) |
+| gates | `0x0003c270(definition)` and `0x0012de70(ecx = definition + 0x10, eax = 3)` both set, the shader `[definition + 4]` not -1; else straight to the stamps |
+| copies | the shader's implementation flags `+0x118`: bit 20, `0x0003bea0` (the frame's first copy, the view's target into target `0x16`); bit 19, `0x0003bd00(definition + 0x84, 0x00131ed0(definition + 0x58))` (a pass into target `0x15`) |
+| alpha clear | the second argument's byte set: `0x00014b60(eax = 0x10, 0x00ffffff, 0, 0)`, the bound target's alpha to 0 |
+| draw | the state calls `0x0001cbb0`, `0x000151c0`, `0x0001cda0`, `0x0001c710`, `0x0001bd50`, `0x0001cdd0`, the shader begin `0x0001bbf0`, `0x00012d50`, `0x0003bf00`, then the quads `0x0001c8a0(8, [geometry + 0x24], [geometry + 0x20])`, geometry `[definition + 0xc]` |
+| stamps | each bitmap of the shader's `+0x24` block (stride `0xc`), each of its images (`+0x48`, stride `0x74`): `0x0003bcb0` |
+
+The quads' native draw is `world_layers_gpu::IndexedPass::water_quads` over `frame_scene::late::WaterComposite`. The alpha clear and copies land on the graph's targets by role: the bound one, `Game(0x16)` and `Game(0x15)`.
+
+`render.scene` counts `water_end_calls`.
+
+Tests: `the_gates_end_with_no_work`, `a_drawn_definition_is_the_ocean`, `the_return_leaves_the_guests_registers`, `the_ocean_panics`, `an_unread_bsp_panics` (`water_end.rs`).
+
 ## The graph's targets
 
 Every render target and depth surface the device makes is the frame graph's, keyed by what it is to the game, not by the guest header or the frame's `TargetRef`. A `TargetRef::Aux(n)` is numbered by first use in its frame, so `Aux(0)` is the freeze frame's target in one frame and the post colour's in the next; a `TargetRole` is the same in every frame.
@@ -250,7 +280,7 @@ flowchart LR
 - **The frame's roles.** The scene sink keeps each surface's role and the recorder files them per frame, `ReplayFrame::roles` (`ReplayFrame::role`), after the present's renaming. `targets::declare` puts each target's role in its `Declared`.
 - **The store.** `ThreadedBackend::with_target_store` installs `frame_graph::targets::Store` (a `d3d::threaded::owner::TargetStore`) on the render thread, so the worker's `create_target` and `release_target` go to it. `targets::Owned` holds one surface per role across frames and devices: the same shape keeps its surface, a new shape makes another. The device's handles for a role come and go; a surface a new shape replaces while a handle to it is live is retired and freed when that handle comes back, since commands queued before the new one can still draw on it. A role's surface outlives its handle, so a device made again after a teardown gets the same surfaces.
 - **The replay.** At the present the worker takes the graph's map, `TargetStore::map`: each declared target's surface by its role. The guest's commands drew on the same surfaces, so a frame's carried work and its replay share them. A declared target with no role, or a role the store does not hold, panics, `graph targets: <cause>`.
-- **The post, the screen effects and the water.** The colour pass `0x000214f0`, the screen effects `0x0002d140` and the water teardown `0x0003c3c0` with its alpha clear `0x0003c515` are still guest work. Their binds, clears and external slots (target 1, the stand-ins `0x19` to `0x1b`, the bound colour) reach the device through `surface_for`, so each is drawn on its role's graph surface.
+- **The post and the screen effects.** The colour pass `0x000214f0` and the screen effects `0x0002d140` are still guest work. Their binds, clears and external slots (target 1, the stand-ins `0x19` to `0x1b`, the bound colour) reach the device through `surface_for`, so each is drawn on its role's graph surface. The water end `0x0003c3c0` makes no device call ("The water end").
 
 `Owned` counts `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `unroled`, `allocation`) for a frame it owns directly (`Owned::own`). Without a role table (the `d3d` crate's own tests) the device makes each target as any surface, and without a store the worker makes them on its backend.
 
@@ -265,6 +295,7 @@ Tests: `a_game_target_is_named_by_its_table_entry` (`native_targets.rs`), `each_
 - The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`; a tail with a view of kind 1 panics (`target`).
 - A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
 - The frame's finish in a game: whether a `release` panics.
+- The water end in a game: which maps' views panic `water end: ocean` (Delta Towers' bay is one).
 - How many frames publish in a game: the `publish_*` counters over the census corpus.
 - A published frame on screen: its pixels and brightness against the guest's present.
 - Snapshot quiescence with the frame step's continuations.

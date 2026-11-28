@@ -659,8 +659,8 @@ h2 render gate                                 # the census corpus; exits 1 whil
   the push buffer, so an inline draw is charged to the producer open when
   its words were written. `status` is `native`, `kept`, `partial` or `d3d` from the
   registry. Sky, clear, target selection, screen effects and `water_teardown`
-  are `partial`. Water teardown can hand off its indexed composite and still
-  owns its guest state changes and alpha clear. A layer draw of the opaque
+  are `partial`. The water teardown's gates are Rust and its ocean panics
+  (`water end: ocean`). A layer draw of the opaque
   block or of R5's is `kept` (`residual_census::KEPT_LAYERS`: the scene's
   layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20, the alternate view's 1, 2, 3 and 5,
   the first person's 1, 2, 3, 7, 8 and 20, the sorted handlers' 18, 19 and

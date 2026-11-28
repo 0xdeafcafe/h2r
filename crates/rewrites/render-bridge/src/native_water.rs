@@ -14,10 +14,9 @@
 //! replacement through the ordered handoff (recording on every copy
 //! before anything is surrendered), applies the mask edits and commits;
 //! the hook stores what was cleared for the restore at the next layer
-//! draw. The wrappers themselves — `0x0003ba90` before, `0x0003c3c0`
-//! with its alpha-only clear `0x3c515` after — are never skipped: the
-//! native draws land inside their window, and the clear keeps its guest
-//! order after them.
+//! draw. The setup wrapper `0x0003ba90` before is never skipped: the
+//! native draws land after it. The water end `0x0003c3c0` after is Rust
+//! ([`crate::water_end`]): its gates return, its ocean panics.
 //!
 //! Every item the guest's layer draw still draws after the decision keeps
 //! its guest draw and is counted `scene_kept_6_<kind>_<cause>`, as the
@@ -55,9 +54,8 @@ pub const WATER_LAYER: u32 = 6;
 /// the device. As the fog's ([`crate::native_fog::Host`]): plans the
 /// skip over a preview, reserves the replacement (recording on every
 /// copy before anything is surrendered), applies the mask edits and
-/// commits; the wrappers `0x0003ba90`/`0x0003c3c0` are never skipped,
-/// so the replacement lands inside their window and the alpha-only
-/// clear `0x3c515` keeps its guest order after it.
+/// commits; the setup wrapper `0x0003ba90` is never skipped, so the
+/// replacement lands after it and before the water end.
 pub trait Host: Send + Sync {
     /// `left` takes why the items it does not clear keep their guest draw.
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut crate::native_layers::Left) -> Option<Cleared>;
@@ -311,6 +309,9 @@ impl Feature for NativeWater {
                 crate::late_sorted::after_entry(&SORTED, &mut *g, o.cpu.esi, &mut ask_run);
             })
             .context_only();
+        // The teardown after it: its gates in Rust, the ocean a named
+        // panic (docs/graphics/retire-d3d-display.md, "The water end").
+        crate::water_end::place(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
     }
