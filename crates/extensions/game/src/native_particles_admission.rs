@@ -105,13 +105,9 @@ fn geometry_label(reason: &str) -> &'static str {
 
 fn refusal_label(why: Refused) -> &'static str {
     match why {
-        Refused::Identity => "Identity",
-        Refused::Target => "Target",
-        Refused::Scissor => "Scissor",
         Refused::Geometry(reason) => geometry_label(reason),
         Refused::Effect(reason) => reason,
         Refused::State => "State",
-        Refused::Texture(_) => "Texture",
         Refused::Shader(_) => "Shader",
     }
 }
@@ -679,7 +675,6 @@ struct Pass {
 /// isolated recording's `ExternalTarget` or the open pass's attachments.
 struct CopyView<'a> {
     device: &'a wgpu::Device,
-    guest_size: (u32, u32),
     size: (u32, u32),
     color_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
@@ -690,7 +685,6 @@ impl<'a> CopyView<'a> {
     fn of_target(t: &ExternalTarget<'a>) -> Self {
         Self {
             device: t.device,
-            guest_size: t.guest_size,
             size: t.size,
             color_format: t.color_format,
             depth_format: t.depth_format,
@@ -701,7 +695,6 @@ impl<'a> CopyView<'a> {
     fn of_attachments(t: &'a ExternalAttachments, request: &d3d::ExternalPassRequest) -> Self {
         Self {
             device: &t.device,
-            guest_size: request.surface_size,
             size: t.size,
             color_format: t.color_format,
             depth_format: t.depth_format,
@@ -733,10 +726,9 @@ impl Pass {
     ) -> Result<ImmediateDrawSnapshot<'_>, Refused> {
         let draw = self.draw.for_copy(t.copy);
         let d = draw.as_ref();
-        if t.guest_size != (d.target.width, d.target.height) {
-            return Err(Refused::Target);
-        }
-        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or(Refused::Target)?;
+        // The draw's own surface scaled to this copy's host texture.
+        let scale = d3d::scaled::RenderScale::between((d.target.width, d.target.height), t.size)
+            .expect("a bound target has a size");
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
         let program = d3d::nv2a::resolved::resolve(d, t.stages.map(|v| v.is_some()), caps, scale)
             .map_err(|reason| Refused::Shader(reason.into()))?;
@@ -751,7 +743,7 @@ impl Pass {
         primitive.strip_index_format = (primitive.topology
             == wgpu::PrimitiveTopology::TriangleStrip)
             .then_some(wgpu::IndexFormat::Uint32);
-        let clip = d.display_rect(d.clip.ok_or(Refused::Scissor)?);
+        let clip = d.display_rect(d.clip.expect("plan admits only clipped draws"));
         let scissor = scale.rect(clip.x, clip.y, clip.width, clip.height);
         let mut textures = [None, None, None, None];
         for (n, slot) in textures.iter_mut().enumerate() {
@@ -1004,17 +996,14 @@ impl ExternalPass for Pass {
             Ok(s) => s,
             Err(why) => return Some(Err(refusal(why))),
         };
-        if snapshot.stencil_reference > u32::from(u8::MAX) {
-            return None;
-        }
         Some(
             match renderer.draws(&t.device, &t.queue, &t.uploads, &snapshot) {
-                Ok((packet, discards)) => Ok(ExternalDraws {
-                    ranges: 1,
-                    packets: vec![packet],
-                    discards,
-                    writes: Vec::new(),
-                }),
+                // A draw that rasterises nothing is still the guest's
+                // draw, taken: one range, no packet.
+                Ok(drawn) => {
+                    let (packets, discards) = drawn.map_or((Vec::new(), false), |(p, d)| (vec![p], d));
+                    Ok(ExternalDraws { ranges: 1, packets, discards, writes: Vec::new() })
+                }
                 Err(why) => Err(refusal(why)),
             },
         )
@@ -1031,10 +1020,8 @@ impl ExternalPass for Pass {
         {
             return 0;
         }
-        usize::from(
-            draw.record(target.encoder, identity, key, target.color, target.depth)
-                .is_ok(),
-        )
+        draw.record(target.encoder, identity, key, target.color, target.depth);
+        1
     }
 }
 

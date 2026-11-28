@@ -390,10 +390,26 @@ mode or all rain another.
 
 Other named admission refusals are `MissingColorTarget`,
 `MissingDepthTarget`, `UnsupportedClip`, `GlyphFiltering`,
-`UnresolvedState`, plus renderer `State`, `Shader`, `Texture`, `Target`,
-`Scissor`, `Geometry` and `Identity`. Preparation uses the live shader,
-textures and state on each copy; it never substitutes an approximate
-material. Diagnostics are bounded and are not replacement receipts.
+`UnresolvedState`, plus renderer `State`, `Shader` and `Geometry`.
+Preparation uses the live shader, textures and state on each copy; it
+never substitutes an approximate material. Diagnostics are bounded and are
+not replacement receipts.
+
+What the renderer draws rather than refuses
+(`ImmediateDrawSnapshot::validate`, `native-render/src/particle_gpu.rs`):
+
+| Draw shape | Drawn as |
+|---|---|
+| Scissor past the target | clamped to the target |
+| Empty scissor, no whole primitive | taken, nothing rasterised |
+| Trailing partial triangle or line | dropped, as D3D drops it |
+| Sampled stage with no texture | one zeroed texel of the stage's dimension |
+| Stencil reference above 255 | its low 8 bits, as the GPU masks it |
+| Wireframe or point fill mode | `PolygonMode::Line`/`Point` where the device has it |
+
+The adapter's own invariants (a named device and generation, bound
+targets, indices inside their vertices, textures bound for this draw) are
+asserts: a break is a bug, never a draw left to the guest.
 
 ### Walking completed emission inputs
 
