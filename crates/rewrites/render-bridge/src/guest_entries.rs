@@ -1,11 +1,12 @@
 //! The guest's Direct3D entries with no device behind them.
 //!
 //! Every entry the retail D3D library exposes to game code (88 of them) is
-//! overridden. Five kinds answer at once with no device state, since
+//! overridden. These answer at once with no device state, since
 //! resource caches reach them outside the frame: `Direct3D_CreateDevice`,
 //! `D3DResource_AddRef` and `Release`, `D3DResource_IsBusy`,
-//! `D3D_BlockOnResource`, and the fences (`D3D_SetFence`,
-//! `D3D_BlockOnTime`). Every other one panics with its name and caller:
+//! `D3D_BlockOnResource`, the fences (`D3D_SetFence`,
+//! `D3D_BlockOnTime`), and the boot display's `D3DDevice_Swap` and device
+//! teardown. Every other one panics with its name and caller:
 //! the frame step draws through the native renderer, so a guest call that
 //! still reaches D3D is a gap to replace, found from the crash.
 
@@ -114,6 +115,9 @@ pub const ENTRIES: &[(u32, &str, &str)] = &[
 /// The last fence [`set_fence`] handed out.
 static FENCE: AtomicU32 = AtomicU32::new(0);
 
+/// Swaps the guest made through [`ENTRIES`]' `D3DDevice_Swap`.
+static SWAPS: AtomicU32 = AtomicU32::new(0);
+
 /// What an entry does: answer with `eax` and pop `cleanup` bytes, or panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -122,6 +126,7 @@ enum Answer {
     Release,
     Return { eax: Option<u32>, cleanup: u32 },
     SetFence,
+    Swap,
     Gap,
 }
 
@@ -137,6 +142,14 @@ fn answer(addr: u32) -> Answer {
         0x003f_a680 => Answer::SetFence,
         // D3D_BlockOnTime: every fence has passed.
         0x003f_a970 => Answer::Return { eax: None, cleanup: 8 },
+        // D3DDevice_Swap: only boot_display_once (0x00012420, before the
+        // main loop) still calls it; the frame's present is the scene's
+        // seal (render_frame::publish). Nothing is shown, so the swap
+        // counts and returns.
+        0x003f_9d00 => Answer::Swap,
+        // The device teardown boot_display_once ends with: the device is
+        // the guest's own object and holds nothing.
+        0x003f_c530 => Answer::Return { eax: None, cleanup: 0 },
         _ => Answer::Gap,
     }
 }
@@ -180,6 +193,7 @@ fn call(
         }
         Answer::Return { eax, cleanup } => (eax, cleanup),
         Answer::SetFence => (Some(FENCE.fetch_add(1, Ordering::Relaxed).wrapping_add(1)), 4),
+        Answer::Swap => (Some(SWAPS.fetch_add(1, Ordering::Relaxed).wrapping_add(1)), 0),
         Answer::Gap => {
             let caller = mem.u32(cpu.esp).unwrap_or(0);
             unimplemented!("d3d entry {name} ({addr:#x}, {convention}): caller {caller:#x}");
