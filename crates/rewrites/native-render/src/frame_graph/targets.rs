@@ -207,11 +207,14 @@ pub struct Targets {
     colour: Option<Target>,
     depth: Option<Target>,
     game: std::collections::HashMap<Home, Target>,
+    /// The depth a colour-only bind of a game target draws its stages
+    /// with, by size.
+    unbound_depth: std::collections::HashMap<(u32, u32), Target>,
 }
 
 impl Targets {
     pub fn new(scale: RenderScale) -> Self {
-        Self { scale, colour: None, depth: None, game: Default::default() }
+        Self { scale, colour: None, depth: None, game: Default::default(), unbound_depth: Default::default() }
     }
 
     pub fn scale(&self) -> RenderScale {
@@ -265,6 +268,15 @@ impl Targets {
                 Some(if level == 0 { t.clone() } else { t.at_level(level) })
             }
         }
+    }
+
+    /// The depth for a colour-only bind of `size` texels: the scene's
+    /// at the scene's size, else one of that size.
+    pub fn unbound_depth(&mut self, device: &wgpu::Device, size: (u32, u32)) -> Target {
+        if size == self.size() {
+            return self.get(device, TargetRef::SceneDepth).expect("scene depth");
+        }
+        self.unbound_depth.entry(size).or_insert_with(|| Target::new(device, "unbound depth", size, DEPTH_FORMAT, 1)).clone()
     }
 }
 

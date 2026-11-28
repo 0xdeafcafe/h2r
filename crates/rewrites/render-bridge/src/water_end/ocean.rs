@@ -8,8 +8,8 @@
 //! |---|---|
 //! | grid `0x0003ca90` | Rust ([`engine::ocean_grid`]), its aspect widened to [`grid_lens`] |
 //! | gate `0x0003c270`, the ocean's occlusion query | [`Device::visible`]: Rust over the native flare query's count pass ([`gate`]) |
-//! | gate `0x0012de70`, the texture block's residency | Rust ([`cache::resident`]); a closed gate goes to the stamps |
-//! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
+//! | gate `0x0012de70`, the texture block's residency | Rust ([`cache::resident`]); a closed gate (an empty block, or one still loading) goes to the stamps |
+//! | the shader `[definition + 4]` to its implementation's flags `+0x118`, an `MTRP` or `3trp`'s template through its group's object (`0x00137bd0`) | Rust ([`shader`], [`template_block`]) |
 //! | copy `0x0003bea0` (bit 20) | Rust ([`first_copy`]): the frame's first call restores the open shader, copies the bound colour into `Game(0x16)` through [`Host::copy_view`](crate::native_targets::Host::copy_view) and sets the frame's flags |
 //! | pass `0x00131ed0`, `0x0003bd00` (bit 19) | Rust ([`reflection::pass`]): the sky drawn into `Game(0x15)` from the camera mirrored about the water's height |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
@@ -24,15 +24,15 @@
 //! <cause>")`, or for the copies `unimplemented!("water ocean copy:
 //! <cause>")` (`copy_cache`, `copy_restore`, `copy_target`, and the
 //! reflection's, [`reflection`]):
-//! `unread`, `unwritable`, `shader_group` (a shader of group
-//! `MTRP` or `3trp`, whose template is a virtual call), `host`, `clear`,
+//! `unread`, `unwritable`, `host`, `clear`,
 //! `structure` (the upload's float model refused), `quads` (no keyed
 //! view), `program` (the load compiled no ocean pass), `stream` (the
 //! grid's vertices do not read or match the program), `target` (a
 //! sampled target not made or aliased), `draw` (the native draw refused),
-//! `flare_host`, `placed` (the gate's count pass not placed),
-//! `texture_cold` (a texture block to stream), `texture_request` (an
-//! image the texture cache must load). The grid's are
+//! `flare_host`, `placed` (the gate's count pass not placed). A texture
+//! block still loading closes the gate for the frame and an image the
+//! texture cache does not hold yet is left unstamped ([`cache`]). The
+//! grid's are
 //! `unimplemented!("water ocean grid: <cause>")`: `unread`, `unwritable`,
 //! `simd` (an unmasked SSE exception), `x87` (an unmasked x87 exception
 //! or an operation the model stops on).
@@ -59,9 +59,12 @@ pub type Cause = &'static str;
 /// data at `+8`.
 pub const TAGS: u32 = 0x004e_3b44;
 /// The groups whose template is a virtual call (`0x00137bd0`, `[vtable +
-/// 0x28]`).
+/// 0x28]`), and the static objects it picks for them (vtables
+/// `0x004535f0` and `0x00453598`).
 pub const GROUP_MTRP: u32 = 0x5052_544d;
 pub const GROUP_3TRP: u32 = 0x7072_7433;
+pub const OBJECT_3TRP: u32 = 0x0047_9868;
+pub const OBJECT_MTRP: u32 = 0x0047_9874;
 /// The definition's words.
 pub const SHADER: u32 = 4;
 pub const GEOMETRY: u32 = 0xc;
@@ -238,16 +241,38 @@ fn first_copy(mem: &mut dyn GuestMemory, device: &dyn Device) -> Result<(), Caus
     crate::frame_step::layer::clear_cache(mem).map_err(unwritable)
 }
 
+/// The block whose first word is shader `index`'s template
+/// (`0x0003c439..0x0003c47b`): a `shad`'s `+0x24`. For `MTRP` and `3trp`,
+/// `0x00137bd0` hands the index to the group's static object (`[vtable +
+/// 0x50]`, `0x002243a0`: the index at `+4`, its data at `+8`) and
+/// `[vtable + 0x28]` gives the block: 3trp's (`0x002242a0`) its data's
+/// `+0x90`, MTRP's (`0x00224d70`) the `+0x24` of the shader its data's
+/// `+0x1c` names.
+pub fn template_block(mem: &mut dyn GuestMemory, index: u32) -> Result<u32, Cause> {
+    let table = word(&*mem, TAGS)?;
+    // `movsx ecx, ax`: the group by the signed index.
+    let group = word(&*mem, table.wrapping_add(((index as u16 as i16 as i32) << 4) as u32))?;
+    let object = match group {
+        GROUP_3TRP => OBJECT_3TRP,
+        GROUP_MTRP => OBJECT_MTRP,
+        _ => return word(&*mem, tag_data(&*mem, index)?.wrapping_add(0x24)),
+    };
+    let data = tag_data(&*mem, index)?;
+    let unwritable = |_: MemFault| "unwritable";
+    mem.set_u32(object.wrapping_add(4), index).map_err(unwritable)?;
+    mem.set_u32(object.wrapping_add(8), data).map_err(unwritable)?;
+    if group == GROUP_3TRP {
+        word(&*mem, data.wrapping_add(0x90))
+    } else {
+        word(&*mem, tag_data(&*mem, word(&*mem, data.wrapping_add(0x1c))?)?.wrapping_add(0x24))
+    }
+}
+
 /// The lookup from the shader `index` to its implementation's flags
 /// (`0x0003c439..0x0003c4d6`).
-pub fn shader(mem: &dyn GuestMemory, index: u32) -> Result<Shader, Cause> {
-    let table = word(mem, TAGS)?;
-    // `movsx ecx, ax`: the group by the signed index.
-    let group = word(mem, table.wrapping_add(((index as u16 as i16 as i32) << 4) as u32))?;
-    if group == GROUP_MTRP || group == GROUP_3TRP {
-        return Err("shader_group");
-    }
-    let block = word(mem, tag_data(mem, index)?.wrapping_add(0x24))?;
+pub fn shader(mem: &mut dyn GuestMemory, index: u32) -> Result<Shader, Cause> {
+    let block = template_block(mem, index)?;
+    let mem = &*mem;
     let template = tag_data(mem, word(mem, block)?)?;
     let c = word(mem, template.wrapping_add(0x5c))?;
     let select = u32::from(mem.u16(word(mem, c.wrapping_add(4))?).map_err(unread)?) & 0x1ff;

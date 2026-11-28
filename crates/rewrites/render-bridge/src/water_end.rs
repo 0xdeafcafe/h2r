@@ -271,9 +271,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "water ocean: shader_group")]
+    #[should_panic(expected = "water ocean: program")]
     fn an_unported_ocean_step_is_named() {
-        ocean_unported("shader_group");
+        ocean_unported("program");
     }
 
     #[test]

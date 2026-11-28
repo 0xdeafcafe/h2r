@@ -10,9 +10,12 @@
 //! | `0x0003bcb0`: an image whose `+0x70` is past `[0x004e6488]` with a texture `+0x50` is done | [`stamp`] |
 //! | `0x0012ccf0(esi image, edx 0xe, xmm1 0)`: an image not cached (`+0xf` bit 1 clear) gives `+0x50`; else its level-0 handle's entry stamped, and, loaded, its texture and stamp taken | [`stamp`] |
 //!
-//! What streams is a cause: `texture_cold` (`0x0012de70`'s request of a
-//! block not loaded) and `texture_request` (`0x0012ce00`, the texture
-//! cache's request of an image not loaded).
+//! What is still loading waits a frame: a block with data not yet loaded
+//! (where `0x0012de70` asks its cache, `0x0012e3a0`) is not resident, so
+//! the ocean is not drawn that frame; an image the texture cache does not
+//! hold yet (where `0x0003bcb0` asks `0x0012ce00`) is left unstamped. The
+//! native draw takes its bitmaps from the map at the load, not from these
+//! caches.
 
 use engine::memory::GuestMemory;
 
@@ -52,7 +55,8 @@ fn touch(mem: &mut dyn GuestMemory, cache: u32, index: u32) -> Result<(), Cause>
     set(mem, entries.wrapping_add((index & 0xffff) * 0x18).wrapping_add(0x14), frame)
 }
 
-/// `0x0012de70(ecx block, eax 3)`: whether the block is resident.
+/// `0x0012de70(ecx block, eax 3)`: whether the block is resident. A
+/// block still loading is not, this frame.
 pub fn resident(mem: &mut dyn GuestMemory, block: u32) -> Result<bool, Cause> {
     if byte(&*mem, block.wrapping_add(0x1e))? != 0 {
         let cache = word(&*mem, RESOURCES)?;
@@ -60,10 +64,8 @@ pub fn resident(mem: &mut dyn GuestMemory, block: u32) -> Result<bool, Cause> {
         touch(mem, cache, index)?;
         return Ok(true);
     }
-    if word(&*mem, block.wrapping_add(8))? as i32 <= 0 || (word(&*mem, block.wrapping_add(0xc))? as i32) < 0 {
-        return Ok(false);
-    }
-    Err("texture_cold")
+    // Empty (`+8` at most 0, `+0xc` below 0), or loading.
+    Ok(false)
 }
 
 /// `0x0012ccb0(ecx format)`: the formats its jump table at `0x0012ccd4`
@@ -107,17 +109,15 @@ pub fn lookup(mem: &mut dyn GuestMemory, image: u32) -> Result<u32, Cause> {
 }
 
 /// `0x0003bcb0(eax image)`: nothing for an image already current; else
-/// the cache's lookup, and an image it does not hold is the request.
-pub fn stamp(mem: &mut dyn GuestMemory, image: u32) -> Result<(), Cause> {
+/// the cache's lookup. Whether the cache holds the image: one it does not
+/// hold yet is left for a later frame.
+pub fn stamp(mem: &mut dyn GuestMemory, image: u32) -> Result<bool, Cause> {
     if word(&*mem, image.wrapping_add(0x70))? as i32 > word(&*mem, TEXTURE_STAMP)? as i32
         && word(&*mem, image.wrapping_add(0x50))? != 0
     {
-        return Ok(());
+        return Ok(true);
     }
-    if lookup(mem, image)? == 0 {
-        return Err("texture_request");
-    }
-    Ok(())
+    Ok(lookup(mem, image)? != 0)
 }
 
 #[cfg(test)]

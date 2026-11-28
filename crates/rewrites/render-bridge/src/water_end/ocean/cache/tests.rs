@@ -27,8 +27,8 @@ fn mem() -> FlatMemory {
     m
 }
 
-/// A loaded block stamps its entry; an empty one is not resident with
-/// no write; one to stream is named.
+/// A loaded block stamps its entry; an empty one, or one still loading,
+/// is not resident, with no write.
 #[test]
 fn a_block_is_resident_empty_or_cold() {
     let mut m = mem();
@@ -42,18 +42,19 @@ fn a_block_is_resident_empty_or_cold() {
     m.set_u32(BLOCK + 0xc, u32::MAX).unwrap();
     assert_eq!(resident(&mut m, BLOCK), Ok(false), "no offset");
     m.set_u32(BLOCK + 0xc, 0).unwrap();
-    assert_eq!(resident(&mut m, BLOCK), Err("texture_cold"));
+    assert_eq!(resident(&mut m, BLOCK), Ok(false), "loading: wait a frame");
+    assert_eq!(m.u32(ENTRIES + 0x14).unwrap(), 0, "nothing stamped");
 }
 
 /// A current image is done with no write; a cached one not current takes
 /// its level-0 entry's texture and the stamp past the cache's; one the
-/// cache does not hold is the request.
+/// cache does not hold yet is left for a later frame.
 #[test]
 fn a_stamp_takes_the_cached_texture_or_names_the_request() {
     let mut m = mem();
     m.set_u32(IMAGE + 0x70, 21).unwrap();
     m.set_u32(IMAGE + 0x50, 0x77).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Ok(()));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(true));
     assert_eq!(m.u32(ENTRIES + 0x14).unwrap(), 0, "nothing stamped");
 
     let mut m = mem();
@@ -61,30 +62,30 @@ fn a_stamp_takes_the_cached_texture_or_names_the_request() {
     m.set_f32(IMAGE + 0x58, 1.0).unwrap();
     m.set_u32(IMAGE + 0x28, 3).unwrap();
     m.set_u8(TEXTURE_ENTRIES + 3 * 40 + 3, 1).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Ok(()));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(true));
     assert_eq!(m.u32(ENTRIES + 3 * 0x18 + 0x14).unwrap(), 9);
     assert_eq!(m.u32(IMAGE + 0x50).unwrap(), TEXTURE_ENTRIES + 3 * 40 + 0x14);
     assert_eq!(m.u32(IMAGE + 0x70).unwrap(), 22);
 
-    // Not loaded: the entry is stamped, the request named.
+    // Not loaded: the entry is stamped, the image left for later.
     m.set_u8(TEXTURE_ENTRIES + 3 * 40 + 3, 0).unwrap();
     m.set_u32(IMAGE + 0x70, 0).unwrap();
     m.set_u32(IMAGE + 0x50, 0).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Err("texture_request"));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(false));
     // No handle, or a format the gate's check holds back, the same.
     let mut m = mem();
     m.set_u8(IMAGE + 0xf, 2).unwrap();
     m.set_f32(IMAGE + 0x58, 1.0).unwrap();
     m.set_u32(IMAGE + 0x28, u32::MAX).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Err("texture_request"));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(false));
     m.set_u32(IMAGE + 0x28, 3).unwrap();
     m.set_u8(TEXTURE_ENTRIES + 3 * 40 + 3, 1).unwrap();
     m.set_u8(FORMAT_GATE, 1).unwrap();
     m.set_u8(IMAGE + 0x17, 12).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Ok(()), "format 12 passes the check");
+    assert_eq!(stamp(&mut m, IMAGE), Ok(true), "format 12 passes the check");
     m.set_u32(IMAGE + 0x70, 0).unwrap();
     m.set_u8(IMAGE + 0x17, 1).unwrap();
-    assert_eq!(stamp(&mut m, IMAGE), Err("texture_request"));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(false));
 }
 
 /// An image the cache does not keep (`+0xf` bit 1 clear) is its texture.
@@ -93,7 +94,7 @@ fn an_uncached_image_is_its_texture() {
     let mut m = mem();
     m.set_u32(IMAGE + 0x50, 0x55).unwrap();
     assert_eq!(lookup(&mut m, IMAGE), Ok(0x55));
-    assert_eq!(stamp(&mut m, IMAGE), Ok(()));
+    assert_eq!(stamp(&mut m, IMAGE), Ok(true));
     assert!((1..=11).chain(17..=18).all(format_check));
     assert!(![0, 12, 16, 19].into_iter().any(format_check));
 }
