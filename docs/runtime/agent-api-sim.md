@@ -360,7 +360,7 @@ The wire types are `agent_proto::sim::objects`.
 [sim-rewrite.md](../engine/sim-rewrite.md) "The tick driver"). `sound` is
 the 30th phase's counters by name, the sound table's `sound.*`
 ([sound-instances.md](../engine/sound-instances.md), "Counters"); it is
-left out while `impl.sim.sound-events.table` is off and nothing ran. `phases`
+left out while nothing ran. `phases`
 lists the 29 phases of `game_tick` in retail order with each phase's guest
 `entry` (`0x` and eight hex digits), `name`, `owner` (`guest` while the
 driver calls the lifted original, `rust` once a Rust body runs it) and

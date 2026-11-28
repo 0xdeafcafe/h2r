@@ -1,8 +1,9 @@
 # The simulation world: pools, save, hash and RNG
 
 Status: `crates/rewrites/sim-world` is built with unit tests. Sound is the
-first subsystem on its pools (`sim_sound::instances::Sounds`); no `World`
-holds it at boot yet, and no other store is filled.
+first subsystem on its pools (`sim_sound::instances::Sounds`): the process's
+`World` (`sim_bridge::world::WORLD`) holds it at boot, and no other store is
+filled.
 
 The native simulation keeps its state in a Rust `World`, and that is the
 truth ([sim-rewrite.md](sim-rewrite.md)). The crate is pure: it depends on
@@ -39,8 +40,16 @@ place because allocation order is state.
 another build stamp (`OtherLayout`, naming the stamp it found), bad magic,
 truncation, out-of-order or unknown or missing sections, a section version
 this build does not write, trailing bytes, or counts that disagree.
-`World::restore_into` replaces `self` only on success, so a refused restore
-changes nothing. There are no migrators: a save belongs to the build that
+`World::restore_into` replaces `self`'s state only on success, so a refused
+restore changes nothing.
+
+A subsystem crate that depends on this one holds its store in the world
+through `Store` (`kind`, `version`, `encode`, `decode`, `install`):
+`World::attach` puts it in its kind's place. `restore_into` decodes every
+section first and installs only when all are valid; a held store the save
+lacks is `MissingSection`, and `World::restore`, which starts from a world
+with no store, refuses a subsystem's section as `UnknownKind`. Test:
+`a_held_store_saves_in_its_kinds_place_and_restores_in_place`. There are no migrators: a save belongs to the build that
 wrote it.
 
 ## Hash
@@ -67,7 +76,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 
 | Kind | Store | Pools | Held by |
 |---|---|---|---|
-| sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, behind `impl.sim.sound-events.table` |
+| sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, every run; the `World` holds it as `world::SoundStore` |
 | test | `Probe` | one | the unit tests |
 
 A subsystem whose records live here is the truth for them. Where guest code
