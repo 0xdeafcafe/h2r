@@ -77,8 +77,6 @@ pub const TABLE: &[Switch] = &[
         "HUD bitmap, text and screen-effect widgets laid out in Rust, no guest draw once proven (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     sw("impl.render.native-decal-decorators", On, "render", "2026-11-28",
         "decal decorators drawn at their sorted place, the draw 0x4ebd0 cut once a frame proves the stage (docs/graphics/retire-d3d-decal-decorators.md): deleted with the D3D path (R10)"),
-    sw("impl.render.native-fog-quad", On, "render", "2026-11-28",
-        "the planar fog's screen quad 0x25d50 drawn natively, its fan cut once a reference matches (docs/graphics/retire-d3d-fog-quad.md): deleted with the guest fog setup (retire-d3d R10)"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),

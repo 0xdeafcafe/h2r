@@ -2,20 +2,20 @@
 //! (docs/engine/sim-rewrite.md): the observer camera, per-seat control,
 //! look response and targeting, the HUD's per-seat update and the
 //! observer resource predictions, in Rust. Always installed, with no
-//! switch (`sim_bridge::sim_seats`): a decline is a named, counted error.
+//! switch (`sim_bridge::sim_seats`): a decline in the live game is
+//! `unimplemented!("seats: <seat>: ...")`.
 //!
 //! Each [`Seat`] is one guest function with the sites its children return
 //! to. A body runs one straight-line segment per transfer: it buffers its
-//! stores in a [`crate::sim_native::plan`] and declines — leaving the CPU
-//! and RAM untouched for the generated original — wherever the shape is
-//! one it does not take over: a float environment it does not assume, an
-//! aliased or unmapped operand, or a path the original owns (a
-//! resource type an edited image can name). The live game's [`SEATS`]
+//! stores in a [`crate::sim_native::plan`] and declines, leaving the CPU
+//! and RAM untouched, wherever the shape is one it does not take: a float
+//! environment it does not assume, an aliased or unmapped operand, or a
+//! resource type an edited image can name. The live game's [`SEATS`]
 //! leave the action builder `186ab0` to the generated code; the phantom
 //! executor runs it in Rust ([`BUILDER`], with [`INTERACTION`] and the
 //! seats under them: [`phantom_body`]). The bound controller's device
-//! read is the kernel [`device`], run inside the control update's body
-//! through its shadow arm [`device::arm`].
+//! read is the kernel [`device`], laid down inside the control update's
+//! body by [`device::arm`].
 //!
 //! The aim-assist cone `1a50a0` is not a seat: the idiomatic kernel
 //! `sim_objects::aim_assist` answers it through [`aim::arm`], and its
@@ -45,7 +45,8 @@ pub mod targeting;
 
 /// One replaced function: the point it is entered at, the sites its
 /// children return to, and the body. The body declines by returning
-/// `None`; the caller then runs the original.
+/// `None`: the live game's seats panic on it by name, and the phantom
+/// executor runs the original.
 pub struct Seat {
     pub point: &'static Point,
     /// The shadow registry's name, and the label the plan installs under.

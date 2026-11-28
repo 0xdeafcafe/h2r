@@ -244,30 +244,6 @@ pub fn quad(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -
     Ok(FogQuad { colour, combiner: combiner(colour), depth, rect, positions })
 }
 
-/// Where a reference body's writes differ from `expected`, by field:
-/// `block_<word>`, `depth`, `state_<name>` (the game's word) and
-/// `d3d_<name>` (the render-state word). Empty when they match.
-pub fn differences(mem: &dyn GuestMemory, expected: &FogQuad) -> Result<Vec<String>, MemFault> {
-    let mut out = Vec::new();
-    for (i, w) in expected.combiner.iter().enumerate() {
-        if mem.u32(global::BLOCK + 4 * i as u32)? != *w {
-            out.push(format!("block_{i}"));
-        }
-    }
-    if mem.u32(global::DEPTH)? != expected.depth {
-        out.push("depth".to_owned());
-    }
-    for (name, game, d3d, value) in STATES {
-        if mem.u32(game)? != value {
-            out.push(format!("state_{name}"));
-        }
-        if d3d != 0 && mem.u32(d3d)? != value {
-            out.push(format!("d3d_{name}"));
-        }
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,26 +336,5 @@ mod tests {
         assert!(q.positions.iter().all(|p| f32::from_bits(p[3]) == 16_777_215.0));
         assert!(q.positions.iter().all(|p| p[2] == q.positions[0][2]));
         assert_eq!(q.combiner[word::CONSTANT0], q.colour);
-    }
-
-    #[test]
-    fn a_reference_body_is_compared_by_field() {
-        let mut m = mem();
-        let rect_at = 0x0050_0000;
-        let q = quad(&m, MXCSR, CONTROL, rect_at).unwrap();
-        for (i, w) in q.combiner.iter().enumerate() {
-            m.set_u32(global::BLOCK + 4 * i as u32, *w).unwrap();
-        }
-        gate_writes(&mut m).unwrap();
-        for (_, game, d3d, value) in STATES {
-            m.set_u32(game, value).unwrap();
-            if d3d != 0 {
-                m.set_u32(d3d, value).unwrap();
-            }
-        }
-        assert!(differences(&m, &q).unwrap().is_empty());
-        m.set_u32(global::BLOCK + 4 * 43, 0).unwrap();
-        m.set_u32(0x0040_757c, 0x0201).unwrap();
-        assert_eq!(differences(&m, &q).unwrap(), ["block_43", "d3d_z_func"]);
     }
 }

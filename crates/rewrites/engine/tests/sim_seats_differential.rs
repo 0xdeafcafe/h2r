@@ -974,8 +974,8 @@ fn aim_assist_matches_lifted() {
 // The bound controller's device read through its kernel arm
 // (`engine::sim_seats::device`), against the lifted original with its
 // real callees: the velocity's length `24590` and the image's `pow`
-// `372d48` on the interpreter's x87. The arm answers every read
-// (`force_answer`); the body's first transfer (the look curve's call,
+// `372d48` on the interpreter's x87. The kernel answers every read; the
+// body's first transfer (the look curve's call,
 // the visibility walk's, or, unseen, the one after) must leave every
 // register but the flags and every byte above the dead stack as the
 // original's does at the same call.
@@ -1106,11 +1106,9 @@ fn native_of(mem: &FlatMemory) -> Guest {
 
 #[test]
 fn bound_control_matches_lifted() {
-    use engine::sim_seats::device::arm;
     let Some((image, ram)) = image() else { return };
     let seat = find_seat("sim.seats.player_control_update");
     let mut code = original(image, seat.point);
-    arm::force_answer(true);
     let mut reached = BTreeSet::new();
     for case in 0..DEV_CASES {
         for control in [0x027f_u16, 0x037f, 0x007f] {
@@ -1148,47 +1146,10 @@ fn bound_control_matches_lifted() {
             assert_eq!(first, None, "{why}: first differing byte (original, port)");
         }
     }
-    arm::force_answer(false);
     // The curve, the visibility walk, and an unseen read's next call.
     assert!(reached.contains(&sim_seats::look::CURVE), "{reached:x?}");
     assert!(reached.contains(&0x000e_4050), "{reached:x?}");
     assert!(reached.len() >= 3, "{reached:x?}");
-}
-
-/// Unproven, the arm leaves the read to the guest and compares its
-/// prediction where the guest's read leads: the curve's entry, or the
-/// visibility walk's return.
-#[test]
-fn bound_control_audits_through_the_guest() {
-    use engine::sim_seats::device::arm;
-    let Some((image, ram)) = image() else { return };
-    let seat = find_seat("sim.seats.player_control_update");
-    let curve = find_seat("sim.seats.player_look_curve");
-    let mut code = original(image, seat.point);
-    arm::reset();
-    for (case, target) in [(0, sim_seats::look::CURVE), (3, sim_seats::look::CURVE), (7, 0x000e_4050), (8, 0x000e_4050)] {
-        let why = format!("case {case}");
-        let (mut mem, mut cpu) = device_start(ram, case, 0x027f);
-        let mut native = native_of(&mem);
-        let mut regs = abi_cpu(&cpu);
-        assert_eq!((seat.run)(&mut regs, &mut native, seat.point.base).unwrap(), None, "{why}: answered");
-        lifted::code::run_until(&mut code, &mut cpu, &mut mem, 2_000_000, |c| c.eip == target)
-            .unwrap_or_else(|e| panic!("{why}: {e}"));
-        if target == 0x000e_4050 {
-            // The walk answers "visible" and returns.
-            let sp = cpu.gpr[4];
-            cpu.eip = mem.read_u32(sp).unwrap();
-            assert_eq!(cpu.eip, arm::VISIBLE_SITE, "{why}");
-            cpu.gpr[4] = sp + 4;
-            cpu.gpr[0] = 1;
-        }
-        let mut native = native_of(&mem);
-        let mut regs = abi_cpu(&cpu);
-        let run = if target == 0x000e_4050 { seat.run } else { curve.run };
-        let _ = run(&mut regs, &mut native, cpu.eip);
-    }
-    let s = arm::status();
-    assert_eq!((s.checked, s.matched, s.mismatched, s.dropped), (4, 4, 0, 0), "{s:?}");
 }
 
 // The seat bodies' leaf callees (`engine::sim_seats::leaf`): each kernel's

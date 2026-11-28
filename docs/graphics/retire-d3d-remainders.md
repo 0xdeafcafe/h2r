@@ -204,7 +204,7 @@ identified in [notes/residual-callers.md](notes/residual-callers.md)
 | `0x4dad0` (site `0x4dae0`) | the emitter `0x0004daa0`'s whole-part indexed draw, shared by every layer's geometry handler and the sorted layer-15 handler | nothing of its own: its draws are each stage's refusals. A census with `frame-scene.census` files them by layer draw (`producers`), and `render.scene`'s `scene_kept_*` names their causes |
 | `0x4ebd0` | decorator types 1 and 2 (decals) in the transparent layers | the decal-decorator stage: each body's `DrawVertices` drawn natively at the call, in sorted order; once a frame proves it, a call the last body's template stands for returns (`ret 0x1c`) and draws the template with its own vertices; the rest count `scene_kept_decal_decorator_<cause>` ([retire-d3d-decal-decorators.md](retire-d3d-decal-decorators.md)) |
 | `0x4c690` | the sky model renderer's strips | the sky stage and its cut ([retire-d3d-r5.md](retire-d3d-r5.md), "The sky's cut"). A strip draws with its own stencil state, the test off on a target with no stencil |
-| `0x25d50` | the planar fog's screen quad (`0x00034420` with `0x00026520` or `0x00025e50`) | modes 2 and 3: the quad drawn natively and the setup returned with no fan once a reference matches ([retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)); modes 1, 4 and 5 (`0x00025e50`, not read) stay the guest's, `scene_kept_fog_quad_other_setup` |
+| `0x25d50` | the planar fog's screen quad (`0x00034420` with `0x00026520` or `0x00025e50`) | modes 2 and 3: the quad drawn natively and the setup returned with no fan ([retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)); modes 1, 4 and 5 (`0x00025e50`, not read) are `unimplemented!("fog quad: other_setup")` |
 | `0x00224fd0` (site `0x225475`) | **S**: particles drawn as model parts, a callback of `0x00175610` | a particle-model stage. Not built |
 
 ## External pass refusals
@@ -242,20 +242,24 @@ then counts it under its caller's gap as
 `scene_dropped_residual_<gap>` in `render.scene` (and their sum
 `scene_dropped_residual`) and logs the first of each gap with its caller.
 The caller is the return address at `[esp]` of the entry being run
-(`gap::set_caller`, in the entry adapter); a draw game code wrote inline
-is filed at the entry whose drain decoded it.
+(`gap::set_caller` through `gap::caller_at`, in the entry adapter); a draw
+game code wrote inline is filed at the entry whose drain decoded it. A
+fan of `0x00034420` is drained at the next fan's first entry (return
+`0x000345b9`, `gap::FAN_DRAIN`), so there the caller is that fan's own
+return address, `[esp + 0x60]`.
 
 | Gap | Callers (return address) | What is not drawn |
 |---|---|---|
 | `emitter_refusal` | `0x0004daa0`..`0x0004dfa0` (site `0x0004dae0`) | the items each layer stage refused |
 | `decal_decorator` | `0x0004ebd0`..`0x0004ee00` | decorator types 1 and 2 |
 | `sky_strip` | `0x0004c690`..`0x0004ca00` | a sky strip the sky stage refused (its stencil) |
-| `fog_quad` | `0x00025d50`..`0x00025e50` | the planar fog's quad of modes 1, 4 and 5 |
+| `fog_fans` | `0x00025dc0`..`0x00025e50` | the fans of `0x00025dc0` (setups `0x00026880`, `0x00026e50`, `0x000276d0`), drawn when `[0x004857b8]` is set and `[0x004857d8]` is above 0 (**S**: a second fog) |
 | `particle_model` | `0x00224fd0`..`0x00225700` | particles drawn as model parts |
 | `post_swallow` | the swallowed call's | a swallowed post call whose native pass refused |
 | `other` | any other | logged with the caller |
 
 Tests: `every_residual_caller_names_its_gap`,
+`a_fan_drained_at_the_next_fan_is_filed_under_the_fans_caller`,
 `a_dropped_draw_counts_its_gap_and_the_total` (`d3d::gap`).
 
 ## What R10 and R11 delete

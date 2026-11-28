@@ -22,10 +22,6 @@ type Unit = std::result::Result<(), GuestFault>;
 
 /// Sample a signed axis against its profile's evenly spaced response curve.
 pub fn curve(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
-    if pc == CURVE {
-        // An audited device read's transfer, when the guest ran it.
-        arm::at_curve(cpu, ram);
-    }
     segment::<4, _>(cpu, ram, pc, CURVE..0x0018_5bd4, &[], |c, p, pc| sample_curve(c, p, pc))
 }
 
@@ -147,10 +143,7 @@ fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
         }
         0x1861a6 => after_search(c, m),
         0x1863a6 | 0x1863c0 | 0x1863f7 | 0x186403 => tracked_object(c, m, pc),
-        0x1865c4 => {
-            arm::at_visible(c, m);
-            after_visibility(c, m, c.eax as u8 != 0)
-        }
+        0x1865c4 => after_visibility(c, m, c.eax as u8 != 0),
         0x1866b3 => after_weapon(c, m),
         0x186a94 => {
             c.edi = pop(c, m)?;
@@ -213,23 +206,11 @@ fn enter(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     leaf::call(c, m, Leaf::Submit, 0x186a94, |c, m| control_step(c, m, 0x186a94))
 }
 
-/// `0x185c6c`: a bound seat's device read, through its arm
-/// ([`arm`]): the kernel's answer laid down and the transfer it leads
-/// to, or a decline the guest answers.
+/// `0x185c6c`: a bound seat's device read, the kernel's answer laid
+/// down and the transfer it leads to ([`arm`]).
 fn bound(c: &mut CpuAbi, m: &mut impl Memory, sp: u32, port: u32) -> Result {
-    let Some(p) = arm::enter(c, m, sp, port) else {
-        return Err(declined(UPDATE));
-    };
-    match lay(c, m, &p) {
-        Ok(transfer) => {
-            arm::answered();
-            Ok(transfer)
-        }
-        Err(fault) => {
-            arm::declined(arm::Decline::Fault);
-            Err(fault)
-        }
-    }
+    let p = arm::enter(c, m, sp, port);
+    lay(c, m, &p)
 }
 
 /// The prediction's stores in retail's order, its registers, then the

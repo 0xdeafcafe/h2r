@@ -239,7 +239,7 @@ where
                         // tallies around the drain and the entry.
                         // The caller a draw with no native stage is
                         // counted under (crate::gap).
-                        crate::gap::set_caller(mem.read_u32(regs.esp).unwrap_or(0));
+                        crate::gap::set_caller(crate::gap::caller_at(|a| mem.read_u32(a).ok(), regs.esp));
                         let mut watch = crate::residual::armed().then(|| {
                             crate::residual::Watch::start(
                                 mem.read_u32(regs.esp).unwrap_or(0),

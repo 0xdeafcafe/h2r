@@ -1,23 +1,16 @@
-//! The bound controller's shadow arm (docs/engine/sim-rewrite.md, "Seats
-//! and rules (phase 7)"; the pattern of [`crate::sim_seats::aim::arm`]).
-//! At `185be0`'s bound branch (`0x185c6c`, a seat whose port has a
-//! controller), the seat body copies the read's inputs out of guest
-//! memory into a [`Device`], runs the kernel [`super::read`] with the x87
-//! model and the image's `pow` for the x87 pieces, and lays the outcome
-//! out as the state at the next transfer: the look curve's call
-//! (`0x185ff4`) unblocked, the visibility walk's (`0x1865bf`) blocked.
+//! The bound controller's device read (docs/engine/sim-rewrite.md, "Seats
+//! and rules (phase 7)"). At `185be0`'s bound branch (`0x185c6c`, a seat
+//! whose port has a controller), the seat body copies the read's inputs
+//! out of guest memory into a [`Device`], runs the kernel [`super::read`]
+//! with the x87 model and the image's `pow` for the x87 pieces, and lays
+//! the outcome out as the state at the next transfer: the look curve's
+//! call (`0x185ff4`) unblocked, the visibility walk's (`0x1865bf`)
+//! blocked, or the walk skipped for a unit that is not a biped.
 //!
-//! **Proof, then take-over.** Until [`PROVEN_AFTER`] reads have matched
-//! the guest's with no mismatch, the body declines the call, the guest
-//! runs it and the prediction is compared at the transfer: at the curve's
-//! entry (every register, `xmm0`..`xmm7`, the x87 stack, the frame, the
-//! record, the input slot and the buttons) or at the visibility walk's
-//! return `0x1865c4` (the callee-saved registers, the frame, the record,
-//! the input slot, the buttons and the x87 control word). After that the
-//! kernel answers, and one answerable read in [`AUDIT_EVERY`] still goes
-//! to the guest and is compared. A mismatch hands every read back to the
-//! guest until the next map. A declined read is the guest's, counted by
-//! reason; an audit whose transfer never came is `dropped`.
+//! Every read is the kernel's. A read it cannot take (a float environment
+//! off the pinned one, an input that faults, spans that alias) is
+//! `unimplemented!("seats: device read: <cause>")`: the guest's read is
+//! gone.
 
 use super::{Constants, Device, Fpu, Last, Path, Seat, read};
 use crate::light_constants::X87;
@@ -29,14 +22,8 @@ use crate::sim_physics::{
 };
 use runtime::CpuAbi;
 use sim_core::det;
-use std::cell::Cell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use x87::abi::{arith_op, unary_op};
 
-/// Matched reads, with no mismatch, before the kernel answers.
-pub const PROVEN_AFTER: u64 = 4096;
-/// After that, one answerable read in this many is compared.
-pub const AUDIT_EVERY: u64 = 64;
 /// The words the prediction holds of the frame: `[sp - 8, sp + 0xf0)`,
 /// the curve's return and argument, the saved registers and the locals.
 pub const FRAME_WORDS: usize = 62;
@@ -60,115 +47,27 @@ const TICKS: u32 = 0x0051_0c54;
 const OBJECT_HEADER: u32 = 0x004e_0300;
 const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
 
-/// Why a read was left to the guest.
+/// Why a read is not the kernel's: each is a named panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// MXCSR or the x87 not in the pinned state, an operand off the exact
     /// range, or a step the x87 model refuses.
     Float,
-    /// A read of the inputs faulted, or the answer's stores did.
+    /// A read of the inputs faulted.
     Fault,
-    /// An audit of a blocked read that skips the visibility walk: there
-    /// is no transfer to compare at.
-    Unseen,
     /// The record, the input slot or the buttons overlap the frame or
     /// each other, so the stores' order would matter.
     Alias,
 }
 
 impl Decline {
-    pub const ALL: [Decline; 4] = [
-        Decline::Float,
-        Decline::Fault,
-        Decline::Unseen,
-        Decline::Alias,
-    ];
-
     pub fn name(self) -> &'static str {
         match self {
             Decline::Float => "float",
             Decline::Fault => "fault",
-            Decline::Unseen => "unseen",
             Decline::Alias => "alias",
         }
     }
-
-    fn index(self) -> usize {
-        self as usize
-    }
-}
-
-/// The arm's counters since the map loaded.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Status {
-    pub checked: u64,
-    pub matched: u64,
-    pub mismatched: u64,
-    pub answered: u64,
-    /// By [`Decline::ALL`] order.
-    pub declined: [u64; 4],
-    pub dropped: u64,
-}
-
-impl Status {
-    pub fn declined_total(&self) -> u64 {
-        self.declined.iter().sum()
-    }
-}
-
-static CHECKED: AtomicU64 = AtomicU64::new(0);
-static MATCHED: AtomicU64 = AtomicU64::new(0);
-static MISMATCHED: AtomicU64 = AtomicU64::new(0);
-static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static ANSWERABLE: AtomicU64 = AtomicU64::new(0);
-static DROPPED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-
-thread_local! {
-    /// The audit waiting for its transfer on this executor.
-    static PENDING: Cell<Option<Prediction>> = const { Cell::new(None) };
-    /// The differential harness's override: answer every read.
-    static FORCE: Cell<bool> = const { Cell::new(false) };
-}
-
-pub fn status() -> Status {
-    let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
-    Status {
-        checked: read(&CHECKED),
-        matched: read(&MATCHED),
-        mismatched: read(&MISMATCHED),
-        answered: read(&ANSWERED),
-        declined: std::array::from_fn(|i| read(&DECLINED[i])),
-        dropped: read(&DROPPED),
-    }
-}
-
-/// Forget the map's proof and counters. Called at map load.
-pub fn reset() {
-    for c in [
-        &CHECKED,
-        &MATCHED,
-        &MISMATCHED,
-        &ANSWERED,
-        &ANSWERABLE,
-        &DROPPED,
-    ] {
-        c.store(0, Ordering::Relaxed);
-    }
-    for c in &DECLINED {
-        c.store(0, Ordering::Relaxed);
-    }
-    PENDING.set(None);
-}
-
-/// Answer every read on this thread, proof or not: the differential
-/// harness's way to put the kernel's answer against the original's.
-pub fn force_answer(on: bool) {
-    FORCE.set(on);
-}
-
-fn proven() -> bool {
-    MISMATCHED.load(Ordering::Relaxed) == 0 && MATCHED.load(Ordering::Relaxed) >= PROVEN_AFTER
 }
 
 /// The next transfer the read leads to.
@@ -228,164 +127,11 @@ impl Prediction {
             .filter(move |&i| self.record[i] != self.record_before[i])
             .map(move |i| (self.record_at.wrapping_add(4 * i as u32), self.record[i]))
     }
-
-    /// The first thing the guest's state at the transfer differs from
-    /// the prediction in.
-    pub fn differs(&self, cpu: &CpuAbi, m: &impl Memory) -> Option<&'static str> {
-        let p = &self.cpu;
-        let mut gprs = vec![
-            // The walk is entered only for a biped (`1 << 0` in `ebx`).
-            (
-                "ebx",
-                if self.site == Site::Curve { p.ebx } else { 1 },
-                cpu.ebx,
-            ),
-            ("ebp", p.ebp, cpu.ebp),
-            ("esi", p.esi, cpu.esi),
-            ("edi", p.edi, cpu.edi),
-        ];
-        let first = match self.site {
-            Site::Curve => {
-                gprs.extend([
-                    ("eax", p.eax, cpu.eax),
-                    ("ecx", p.ecx, cpu.ecx),
-                    ("edx", p.edx, cpu.edx),
-                    ("esp", p.esp, cpu.esp),
-                ]);
-                0
-            }
-            _ => {
-                gprs.push(("esp", self.sp, cpu.esp));
-                2
-            }
-        };
-        if let Some((name, ..)) = gprs.iter().find(|(_, a, b)| a != b) {
-            return Some(name);
-        }
-        if self.site == Site::Curve {
-            const XMM: [&str; 8] = [
-                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
-            ];
-            if let Some(i) = (0..8).find(|&i| p.xmm[i] != cpu.xmm[i]) {
-                return Some(XMM[i]);
-            }
-            if p.x87.st != cpu.x87.st || p.x87.tag != cpu.x87.tag || p.x87.status != cpu.x87.status
-            {
-                return Some("x87");
-            }
-            if p.mxcsr != cpu.mxcsr {
-                return Some("mxcsr");
-            }
-        }
-        if p.x87.control != cpu.x87.control {
-            return Some("x87 control");
-        }
-        let word = |a: u32| m.u32(a).ok();
-        for i in first..FRAME_WORDS {
-            if word(self.sp.wrapping_add((i as u32 * 4).wrapping_sub(8))) != Some(self.frame[i]) {
-                return Some("frame");
-            }
-        }
-        for i in 0..RECORD_WORDS {
-            if word(self.record_at.wrapping_add(4 * i as u32)) != Some(self.record[i]) {
-                return Some("record");
-            }
-        }
-        if word(self.slot) != Some(self.input) {
-            return Some("input slot");
-        }
-        let half = |o: u32| m.u16(cpu.ebp.wrapping_add(o)).ok();
-        if (half(0xc), half(0xe)) != (Some(self.buttons[0]), Some(self.buttons[1])) {
-            return Some("buttons");
-        }
-        None
-    }
 }
 
-/// At the bound branch: predict the read and decide who answers. `Some`
-/// is the kernel's answer for the body to lay down; `None` leaves the
-/// read to the guest (an audit is then pending, or the decline counted).
-pub fn enter(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Option<Prediction> {
-    if PENDING.take().is_some() {
-        DROPPED.fetch_add(1, Ordering::Relaxed);
-    }
-    let prediction = match predict(c, m, sp, port) {
-        Ok(p) => p,
-        Err(why) => {
-            declined(why);
-            return None;
-        }
-    };
-    if FORCE.get() {
-        return Some(prediction);
-    }
-    let slot = ANSWERABLE.fetch_add(1, Ordering::Relaxed);
-    if proven() && slot % AUDIT_EVERY != 0 {
-        return Some(prediction);
-    }
-    if prediction.site == Site::Unseen {
-        declined(Decline::Unseen);
-    } else {
-        PENDING.set(Some(prediction));
-    }
-    None
-}
-
-/// The body laid the answer down.
-pub fn answered() {
-    ANSWERED.fetch_add(1, Ordering::Relaxed);
-}
-
-/// The read went to the guest for `why`.
-pub fn declined(why: Decline) {
-    DECLINED[why.index()].fetch_add(1, Ordering::Relaxed);
-}
-
-/// At the look curve's entry: compare a pending audit whose read called
-/// it.
-pub fn at_curve(c: &CpuAbi, m: &impl Memory) {
-    let Ok(ret) = m.u32(c.esp) else { return };
-    if ret == CURVE_SITE {
-        settle(c, m, c.esp.wrapping_add(8));
-    }
-}
-
-/// At the visibility walk's return: compare a pending audit whose read
-/// called it.
-pub fn at_visible(c: &CpuAbi, m: &impl Memory) {
-    settle(c, m, c.esp);
-}
-
-fn settle(c: &CpuAbi, m: &impl Memory, sp: u32) {
-    let Some(p) = PENDING.take() else { return };
-    if p.sp != sp {
-        PENDING.set(Some(p));
-        return;
-    }
-    CHECKED.fetch_add(1, Ordering::Relaxed);
-    let at = if c.esp == sp {
-        Site::Visible
-    } else {
-        Site::Curve
-    };
-    let what = if p.site != at {
-        Some("path")
-    } else {
-        p.differs(c, m)
-    };
-    match what {
-        None => {
-            MATCHED.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(what) => {
-            if MISMATCHED.fetch_add(1, Ordering::Relaxed) == 0 {
-                eprintln!(
-                    "sim: seats device arm: the guest's {what} differs from the prediction; \
-                     the guest answers every read until the next map"
-                );
-            }
-        }
-    }
+/// At the bound branch: the kernel's answer for the body to lay down.
+pub fn enter(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Prediction {
+    predict(c, m, sp, port).unwrap_or_else(|why| unimplemented!("seats: device read: {}", why.name()))
 }
 
 /// `pow`'s constant reads through the segment's memory.
