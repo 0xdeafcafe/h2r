@@ -19,6 +19,12 @@
 //! - **Effects seed.** No path under either reads the shared random seeds
 //!   (`[0x004e7408]`): both predict that the seeds do not move.
 //!
+//! The stamps are the render's, not the arena's ([`stamps`]): where the
+//! answer runs `0x00174420` the model's stamps are held in host memory,
+//! and where the guest body runs it reads the held stamps lent to the
+//! arena and they go back when it returns
+//! (docs/engine/sim-render-split.md, "6. Render scratch and stamps").
+//!
 //! One frame in [`SAMPLE`] is compared (the render frame counter
 //! `0x004ba034`). The gate answers after [`CLEAN`] sampled frames in a
 //! row compared clean, and stops answering at the first difference or
@@ -36,6 +42,7 @@ pub mod geometry;
 pub mod mirror;
 mod overlay;
 mod ribbon;
+pub mod stamps;
 pub mod view_update;
 
 use std::cell::RefCell;
@@ -339,7 +346,15 @@ struct OpenDispatch {
     runs: Vec<dispatch::Run>,
 }
 
+/// The outermost `0x00174420` call whose guest body runs on the lent
+/// stamps (`esp` its return address).
+struct Lending {
+    esp: u32,
+    lent: stamps::Lent,
+}
+
 thread_local! {
+    static LENDING: RefCell<Option<Lending>> = const { RefCell::new(None) };
     static UPDATE: RefCell<Option<OpenUpdate>> = const { RefCell::new(None) };
     static DISPATCH: RefCell<Option<OpenDispatch>> = const { RefCell::new(None) };
 }
@@ -350,7 +365,61 @@ fn sse_supported(mxcsr: u32) -> bool {
     mxcsr & !0x3f == 0x1f80
 }
 
-/// At `0x00174420`'s entry (`esp` its return address).
+/// At `0x00174420`'s entry (`esp` its return address). True when the
+/// answer made the call and it returns (`ret 0x10`); false runs the
+/// guest's body, an outermost one on the lent stamps.
+fn update_entry(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, cw: u16) -> bool {
+    let Ok(frame) = m.u32(view_update::FRAME) else {
+        return false;
+    };
+    let nested = LENDING.with(|l| {
+        let mut l = l.borrow_mut();
+        match l.as_ref().map(|o| o.esp) {
+            Some(outer) if esp < outer => true,
+            Some(_) => {
+                // An outer call whose return was never seen.
+                count("stamps_unbalanced_lend", 1);
+                *l = None;
+                false
+            }
+            None => false,
+        }
+    });
+    if nested {
+        return false;
+    }
+    let sampled = with_gate(|g| g.frame(frame));
+    if !sampled && answering() && answer::view_update(m, esp, mxcsr, cw) {
+        return true;
+    }
+    if let Some(lent) = stamps::with(|s| s.lend(m)) {
+        LENDING.with(|l| *l.borrow_mut() = Some(Lending { esp, lent }));
+    } else {
+        count("stamps_unlent", 1);
+    }
+    update_begin(&*m, esp, mxcsr, cw);
+    false
+}
+
+/// At `0x00174420`'s return (`esp` past its arguments): the comparison,
+/// then the outermost body's stamps go to the table and the arena's back.
+fn update_return(m: &mut dyn GuestMemory, esp: u32) {
+    update_end(&*m, esp);
+    let lending = LENDING.with(|l| {
+        let mut l = l.borrow_mut();
+        if l.as_ref().is_some_and(|o| o.esp.wrapping_add(VIEW_UPDATE_POP) == esp) {
+            l.take()
+        } else {
+            None
+        }
+    });
+    if let Some(lending) = lending {
+        stamps::with(|s| s.take(m, lending.lent));
+    }
+}
+
+/// At `0x00174420`'s entry (`esp` its return address), on a sampled
+/// frame: the prediction the return compares.
 fn update_begin(m: &dyn GuestMemory, esp: u32, mxcsr: u32, cw: u16) {
     let Ok(frame) = m.u32(view_update::FRAME) else {
         return;
@@ -569,6 +638,10 @@ fn draw_run(mem: &mut dyn GuestMemory, run: &dispatch::Run) {
 /// A snapshot load: calls and dispatches open across it never end.
 pub fn forget() {
     UPDATE.with(|u| u.borrow_mut().take());
+    // The arena is the snapshot's: nothing lent is put back, and the
+    // render's stamps start over.
+    LENDING.with(|l| l.borrow_mut().take());
+    stamps::with(|s| s.clear());
     DISPATCH.with(|d| d.borrow_mut().take());
     emission::forget();
     mirror::forget();
@@ -579,15 +652,18 @@ pub fn forget() {
 /// Installs the arm's observers (the frame step's build, unless [`ID`] is
 /// off).
 pub fn install(b: &mut Builder) {
+    // The stamps: the answer makes the call, or the guest's body runs on
+    // the lent stamps and gives them back at its return.
     b.raw()
-        .observe_before(
-            &points::PARTICLE_VIEW_UPDATE,
-            "effects_shadow_update",
-            |o| {
-                let g = o.guest();
-                update_begin(&*g, o.cpu.esp, o.cpu.mxcsr, o.cpu.x87.control);
-            },
-        )
+        .before(&points::PARTICLE_VIEW_UPDATE, "effects_shadow_update", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let cut = update_entry(&mut *rt.memory(), c.cpu.esp, c.cpu.mxcsr, c.cpu.x87.control);
+            if cut {
+                c.ret(VIEW_UPDATE_POP - 4).map(Flow::Return)
+            } else {
+                Ok(Flow::Continue)
+            }
+        })
         .context_only()
         .optional();
     b.raw()
@@ -595,8 +671,8 @@ pub fn install(b: &mut Builder) {
             &points::PARTICLE_VIEW_UPDATE,
             "effects_shadow_update_end",
             |o| {
-                let g = o.guest();
-                update_end(&*g, o.cpu.esp);
+                let mut g = o.guest();
+                update_return(&mut *g, o.cpu.esp);
             },
         )
         .context_only()
@@ -723,7 +799,7 @@ pub fn install(b: &mut Builder) {
 
 #[cfg(test)]
 mod tests {
-    use super::view_update::tests::{PART_DATA, ROWS, particle, system, world};
+    use super::view_update::tests::{PART_DATA, ROWS, SYS_DATA, particle, system, world};
     use super::*;
     use engine::memory::FlatMemory;
 
@@ -822,6 +898,46 @@ mod tests {
         m.set_u32(0x0068_0004, 23).unwrap();
         update_end(&m, ESP + VIEW_UPDATE_POP);
         assert!(counter("stamps_mismatched_seed") > differed);
+    }
+
+    #[test]
+    fn the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them() {
+        let (mut m, s) = sampled_world();
+        for i in 0..4u32 {
+            m.set_u32(ESP + 4 + 4 * i, 0).unwrap();
+        }
+        let arrays = |m: &FlatMemory| {
+            (m.bytes(SYS_DATA, (SYSTEM * 8) as usize).unwrap(), m.bytes(PART_DATA, (PARTICLE * 8) as usize).unwrap())
+        };
+        let tick = arrays(&m);
+        let stamp = |m: &FlatMemory| stamps::with(|st| st.view(m).unwrap().u32(PART_DATA + 0x30).unwrap());
+
+        // A frame the answer takes: the call returns, its entry is queued.
+        let frame = SAMPLE * 1000 + 1;
+        m.set_u32(view_update::FRAME, frame).unwrap();
+        with_gate(|g| {
+            g.frame(frame);
+            g.answering = true;
+        });
+        assert!(update_entry(&mut m, ESP, MXCSR, CW));
+        assert_eq!(arrays(&m), tick);
+        assert_eq!(m.u32(LIST_END).unwrap(), 1);
+        assert_eq!(m.u32(ROWS + 0x24).unwrap(), s);
+        assert_eq!(stamp(&m), frame, "the render's stamp is held");
+
+        // A sampled frame: the guest's body runs on the lent stamps, is
+        // compared, and gives them back.
+        let frame = SAMPLE * 1001;
+        m.set_u32(view_update::FRAME, frame).unwrap();
+        let matched = counter("stamps_matched");
+        assert!(!update_entry(&mut m, ESP, MXCSR, CW));
+        guest_runs(&mut m);
+        update_return(&mut m, ESP + VIEW_UPDATE_POP);
+        assert!(counter("stamps_matched") > matched);
+        assert_eq!(arrays(&m), tick);
+        assert_eq!(stamp(&m), frame);
+        with_gate(|g| g.answering = false);
+        stamps::with(|st| st.clear());
     }
 
     #[test]

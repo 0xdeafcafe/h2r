@@ -765,6 +765,11 @@ points! { ALL;
     /// The particle systems' per-view update the render reaches from the
     /// object and effect draw paths: their visibility and location stamps.
     PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
+    /// A particle location's per-frame move (EBX the location), from the
+    /// director's particle update (`0x00176f60` -> `0x00174990` ->
+    /// `0x00174a30`): its emitters follow it when its stamp `+0x30` is the
+    /// last frame's (`0x00248870`).
+    PARTICLE_LOCATION_MOVE @ 0x0024_8750: [opaque], Optional; "docs/engine/sim-render-split.md";
     /// One particle's emission: the particle draw's per-particle callback
     /// (`ret 0x1c`), which evaluates its properties and calls the emitter.
     PARTICLE_EVALUATE @ 0x0022_4550: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3, a4: stack 4, a5: stack 5, a6: stack 6) ret 28], Optional; "docs/graphics/native-particles.md";

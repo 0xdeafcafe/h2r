@@ -57,6 +57,13 @@ What the stamps arm writes:
 | singletons `0x00479868`, `0x00479874` `+4`, `+8` | the tag and tag data `0x00137bd0` sets before each read |
 | list row | class 3, depth, handler `0x00173c90`, payload (system, particle), position, for shader flag `0x8000` |
 
+The system and particle stamps are the render's (`effects_shadow/stamps.rs`,
+[sim-render-split.md](../engine/sim-render-split.md#6-render-scratch-and-stamps)):
+a table keyed by element and salt holds those that differ from the arena's.
+Where the guest body runs, the table is lent to the arena at the outermost
+call's entry and taken back at its return; the answer reads the arena through
+the table and writes only the singletons and the list.
+
 The dispatch arm leaves the singletons out: `0x00137bd0` sets one before
 every read, so the loop's last value is never read. The handlers' other
 writes (`0x00035b00`'s `0x004670bc`, D3D state) are not compared.
@@ -68,7 +75,7 @@ The gate, per frame of `0x004ba034`:
 | frames compared | 1 in 64 (`SAMPLE`) |
 | answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
 | stops answering | at the first difference or refusal |
-| while answering | on frames not sampled, "R2's answer"; each run of consecutive decal entries (`0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
+| while answering | on frames not sampled, "R2's answer" (the outermost `0x00174420` call too); each run of consecutive decal entries (`0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
 
 The model refuses, by name: `fault`, `layout`, `no_definition`,
 `no_model`, `singleton_vtable`, `object_path` (a shader flag besides
@@ -79,7 +86,8 @@ or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
 
 | Counter | Counts |
 |---|---|
-| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
+| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames (`stamps_entries_queued` counts answered calls too) |
+| `answer_stamps`, `stamps_unlent`, `stamps_unbalanced_lend` | answered calls; guest bodies run without the table (the arrays unreadable); an outer call whose return was not seen |
 | `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
 | `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
 | `emission_matched`, `emission_mismatched_{words,window,corners,inputs,sequence,writes}`, `emission_refused_<reason>`, `emission_unbalanced` | particle callbacks on sampled frames |
@@ -94,11 +102,12 @@ Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
 `the_distance_keeps_the_x87_precision_or_refuses`,
 `the_fade_and_the_frustum_follow_the_guests_compares`), `dispatch.rs`,
 `effects_shadow.rs` (the gate, a matching and a differing call and
-dispatch, the runs).
+dispatch, the runs, `the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them`),
+`stamps.rs`.
 
 Still the guest's: the handlers' material setup (`0x00174f80`,
 `0x002243c0`, `0x00035b00`), the decal-list replays, the calls of
-`0x00174420` and `0x00040e30`.
+`0x00174420` on sampled frames and refusals, and `0x00040e30`.
 
 
 ## R2's geometry arm

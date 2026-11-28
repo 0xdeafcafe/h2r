@@ -1,7 +1,7 @@
 # Sim and render split
 
-Status: Design. The render random stream, the gather-lens exit, the frame guard (slice 1), the tick-end node matrices (slice 4) and the flare store (slice 6) are built; every other row is a slice below.
-Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/game/src/flare_store.rs` (the flare store), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
+Status: Design. The render random stream, the gather-lens exit, the frame guard (slice 1), the tick-end node matrices (slice 4), the flare store (slice 6) and the particle view stamps (slice 9) are built; every other row is a slice below.
+Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/game/src/flare_store.rs` (the flare store), `crates/rewrites/render-bridge/src/effects_shadow/stamps.rs` (the particle stamps), `crates/rewrites/engine/src/particle_seen.rs` (particles age as if seen), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
 Switch: `impl.sim.frame-guard` (off, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
 
 ```mermaid
@@ -40,7 +40,7 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 | 4 | Flare visibility byte | writer `0x00020bb0`, reader `0x00020770` (its count read at `0x000207b0`'s call `0x00020840`) | a GPU sample count smoothed into byte 3 of each entry of the array at `0x0051f40c`. No tick code reads the byte; `object_new` reads the entries' heads to free an owner's flares | the renderer ([4](#4-the-flare-visibility-byte)) |
 | 5 | Push-buffer callback texels | insert `0x0002460e` in `0x000245c0`, callback `0x00024970`, texels through `0x003fdbc0` and `0x00024a70` | none: the one call passes mode 0, so the insert is never reached | nobody, dead code ([5](#5-the-push-buffer-callback)) |
 | 6 | Render scratch in the arena | the gathers and the setup: object visit marks, object `+0xcc`, light render fields, lighting cache | the arena hash only (census class a: the tick does not read them) | the render-private store ([6](#6-render-scratch-and-stamps)) |
-| 7 | Particle view stamps | per-view update `0x00174420` | system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30` | the render-private store ([6](#6-render-scratch-and-stamps)) |
+| 7 | Particle view stamps | per-view update `0x00174420` | system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30`; the stamp read by the location move at `0x00248870` | built: `effects_shadow/stamps.rs`, `particle_seen.rs` ([6](#6-render-scratch-and-stamps)) |
 | 8 | Animation cache | get `0x001237e0` from the render, request `0x001236f0` from the tick | use stamps `+0x14`; which clips are resident when the tick samples | the clip store ([6](#6-render-scratch-and-stamps)) |
 | 9 | Frame counters | present `0x00013f10` (`0x00485aa0`), `render_views` (`0x004ba034`, byte `0x004e6098`) | the tick's effect and particle code | the tick driver ([7](#7-frame-counters)) |
 | 10 | Game-time bracket | `0x00146de0`, `0x00146b80` around `render_views` | not identified (**S**) | settled by the frame guard |
@@ -105,8 +105,8 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 | State | Move | Proof |
 |---|---|---|
 | Object visit marks, object `+0xcc`, light render fields, lighting cache, palettes, records | The setup's private overlay is the only writer's target (`native_scene_lists/setup.rs` keeps the display's there already). A guest body that still writes them runs against the overlay's copy. | frame guard: no dirty page under the object, light and cache pools |
-| Particle view stamps (`0x00174420`) | The stamps go to a side table keyed by the system's datum (`effects_shadow::view_update` already makes them in Rust). The tick's particle ageing reads no stamp: every system ages as if seen. | frame guard; unit test that ageing is equal for a seen and an unseen system |
-| Animation cache use stamps and residency | The tick samples from the clip store (`sim-rewrite.md`, section 2, static data), which holds every clip of the map. The guest cache serves only the render, and its stamps are render-private. | cache-cold arm of the verification ladder, with the guest animation cache emptied each tick |
+| Particle view stamps (`0x00174420`) | **Code.** The stamps live in a side table keyed by element and checked by the datum's salt (`effects_shadow::stamps`). On answered frames the model makes the call over the arena with the table laid on it, and only its singleton and list writes reach guest memory. Where the guest body runs, the table is lent to the arena before it and taken back after it. The director's location move (`0x00248750`, from `0x00176f60` -> `0x00174990` -> `0x00174a30`) follows its emitters only when `+0x30 + 1` is the frame counter; the tick driver's observer at its entry sets that stamp for every location (`engine::particle_seen`), so every system ages as if seen. | frame guard; `particle_seen`'s `a_seen_and_an_unseen_system_age_alike`, `stamps.rs` and `the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them` |
+| Animation cache use stamps and residency | The tick samples from the clip store (`sim-rewrite.md`, section 2, static data), which holds every clip of the map. The guest cache serves only the render, and its stamps are render-private. The resident get's stamp is one store, `0x0012387a`: the cache's use counter `[[0x004e3b54]+0x38]` into `[[[0x004e3b54]+0x64]+0x44] + 24 × (record +0xc & 0xffff) + 0x14` (**Code**, the lifted image). | cache-cold arm of the verification ladder, with the guest animation cache emptied each tick |
 | Texture and geometry residency, the async I/O pool | Render only (collision is in the tags). | none needed |
 
 **S**: which of these fields lie inside `SimRegion::HALO2`. The frame guard's first run lists them.
@@ -122,7 +122,7 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 | the render random seed | process | a session |
 | the flare state `0x0051f408..0x005234c8` and the owners' salts | entry | a map: dropped when the simulation's bytes or the map's name change |
 | object overlay: pose for display, palettes, records, lighting, visit marks | object datum | a frame, or until the datum is reused |
-| particle view stamps | system datum | until the datum is reused |
+| particle view stamps | system or particle element, its salt | until the datum is reused or the tick writes the field |
 
 It is host memory, outside guest RAM: no checkpoint, film, keyframe or hash holds it. A revert or a film seek drops it, and the next frame rebuilds it. **Design.**
 
@@ -179,6 +179,8 @@ Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 - That no tick code reached through an indirect call reads the flare state: the static census follows direct calls and tail transfers only. The run-time census answers it.
 - Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's four pools are written in a frame step, are open.
 - Arena writes made through another alias of a page: the watch sees them, the trap does not, so their writer reads `unseen`.
+- That no render reader besides `0x00174420` reads a particle's `+0x30` (the census found only the location move); a sampled or refused frame still writes and restores the stamps, so the frame guard sees those pages dirty.
+- That `0x00248750` runs in `h2 sim` as in a drawn session, and the visual effect of every system taking the seen path.
 - What the game-time bracket writes.
 - The tick-end phase's cost on a full campaign level and on a dedicated host.
 

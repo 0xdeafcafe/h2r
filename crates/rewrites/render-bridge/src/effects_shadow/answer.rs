@@ -16,6 +16,12 @@
 //!   and the builder returns its AL; the polygon handler's draw of it is
 //!   the native effect path's.
 //!
+//! - **Stamps.** At `0x00174420`'s entry the outermost call is made in
+//!   Rust ([`view_update`]) over the arena with the render's stamps on it
+//!   ([`stamps::View`]); its stamps stay in [`stamps`], its other writes
+//!   (the particle-model singletons, the sorted entries) are made in the
+//!   guest, and the call returns.
+//!
 //! What the answer does not take keeps its guest body, counted
 //! `scene_kept_15_<kind>_<cause>`: the model's refusal (`fault`, `simd`,
 //! `x87`, `unbounded`, ...) or the native draw's (`refused`, `no_host`,
@@ -26,7 +32,7 @@ use engine::contrail_ribbon as cr;
 use engine::memory::GuestMemory;
 use engine::particle_emission as pe;
 
-use super::{answering, count, emission, mirror, ribbon, view_update, with_gate};
+use super::{answering, count, emission, mirror, ribbon, sse_supported, stamps, view_update, with_gate};
 
 /// Whether this call is the answer's: the gate answers and the frame is
 /// not sampled. A sampled frame opens `arm` instead.
@@ -52,6 +58,43 @@ fn apply<'a>(m: &mut dyn GuestMemory, writes: impl IntoIterator<Item = (&'a u32,
     for (&a, &b) in writes {
         if m.set_u8(a, b).is_err() {
             count("answer_fault", 1);
+        }
+    }
+}
+
+/// At `0x00174420`'s entry (`esp` its return address), on a frame the
+/// answer takes. True when the call is made and returns (`ret 0x10`);
+/// false runs the guest's body.
+pub(super) fn view_update(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, cw: u16) -> bool {
+    if !sse_supported(mxcsr) {
+        kept("stamps", "mxcsr");
+        return false;
+    }
+    let mut args = [0; 4];
+    for (i, a) in (0..).zip(args.iter_mut()) {
+        match m.u32(esp.wrapping_add(4 + 4 * i)) {
+            Ok(v) => *a = v,
+            Err(_) => {
+                kept("stamps", "fault");
+                return false;
+            }
+        }
+    }
+    let rest = stamps::with(|s| {
+        let p = view_update::predict(&s.view(&*m)?, args, cw)?;
+        let rest = s.keep(&*m, &p.writes)?;
+        Ok::<_, view_update::Refusal>((rest, p.entries.len()))
+    });
+    match rest {
+        Ok((rest, entries)) => {
+            apply(m, &rest);
+            count("answer_stamps", 1);
+            count("stamps_entries_queued", entries as u64);
+            true
+        }
+        Err(r) => {
+            kept("stamps", r.name());
+            false
         }
     }
 }

@@ -38,7 +38,7 @@ and by target copy and reason for GPU preparation.
 Code evidence from the owner's executable, inspected with `h2 disasm`:
 
 - `0x00174420` updates particle/effect state while rendering. It is **never
-  skipped** here; neither are property evaluation or emitter iteration.
+  skipped** here (R2's answer makes it in Rust, retire-d3d-r2.md); neither are property evaluation or emitter iteration.
 - `0x002243c0` sets up the particle material, selects the vertex program
   through `0x0023ea80`, then walks particles with callback `0x00224550`.
 - `0x00224550` evaluates colour, alpha, rotation, size and sprite windows;
