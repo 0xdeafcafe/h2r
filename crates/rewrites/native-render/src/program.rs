@@ -1608,6 +1608,9 @@ impl WorldPipelines {
 pub(crate) struct MaterialUse {
     pub cluster: bool,
     pub rigid: bool,
+    /// Some placement of the material draws faded: with its rigid
+    /// program's stipple variant ([`RigidStipple`]).
+    pub stippled: bool,
 }
 
 /// The materials drawn with their own programs, and each batch's texture
@@ -2026,6 +2029,26 @@ pub(crate) struct Rigid {
     /// Per slot, ascending: the placement and its rows.
     slots: Vec<(u32, ModelRows)>,
     pub(crate) pipelines: WorldPipelines,
+    /// The program's stipple variant, made when a faded placement is first
+    /// selected ([`Rigid::stipple_for`]).
+    stipple: Option<RigidStipple>,
+}
+
+/// The number of patterns in the engine's stipple table (`0x00487288`).
+pub const STIPPLE_LEVELS: usize = 17;
+
+/// A rigid program with the polygon stipple test
+/// ([`crate::object_program::stipple_module`]) for the placements the
+/// structure draws faded (retail's LOD display fade): the rigid vertex
+/// slots bound as for the plain program, and one pixel block per table
+/// pattern ([`STIPPLE_LEVELS`]), bound at the pattern's dynamic offset, so a
+/// faded draw takes its pattern's rows without a block of its own.
+pub(crate) struct RigidStipple {
+    pipelines: WorldPipelines,
+    uniforms: wgpu::BindGroup,
+    pixel: wgpu::Buffer,
+    /// Bytes between the pattern blocks (the device's offset alignment).
+    stride: u64,
 }
 
 /// The placements `material`'s draws in `world` name, ascending, each with
@@ -2153,7 +2176,74 @@ impl Rigid {
             stride,
             slots,
             pipelines,
+            stipple: None,
         })
+    }
+
+    /// The stipple variant of this program over `g`'s pixel shader, made on
+    /// first use. A module that does not link is a program bug, named.
+    fn stipple_for(&mut self, device: &wgpu::Device, g: &Gpu) -> &mut RigidStipple {
+        if self.stipple.is_none() {
+            let wgsl = crate::object_program::stipple_module(&self.program.wgsl, &g.program)
+                .unwrap_or_else(|e| panic!("native world: a rigid program's stipple variant: {e}"));
+            let align = u64::from(device.limits().min_uniform_buffer_offset_alignment.max(1));
+            let size = PixelUniforms::SIZE as u64;
+            let stride = size.div_ceil(align) * align;
+            let dynamic = |binding| {
+                let mut entry = uniform_entry(binding, wgpu::ShaderStages::VERTEX_FRAGMENT);
+                if let wgpu::BindingType::Buffer { has_dynamic_offset, min_binding_size, .. } = &mut entry.ty {
+                    *has_dynamic_offset = true;
+                    *min_binding_size = wgpu::BufferSize::new(if binding == 0 { VertexUniforms::SIZE as u64 } else { size });
+                }
+                entry
+            };
+            let uniforms_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("native world rigid stipple uniforms"),
+                entries: &[dynamic(0), dynamic(1)],
+            });
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("native world rigid stipple program"),
+                bind_group_layouts: &[Some(&uniforms_layout), Some(&g.textures_layout)],
+                immediate_size: 0,
+            });
+            let pixel = gfx::churn::create_buffer_init(
+                device,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("native world rigid stipple pixel"),
+                    contents: &vec![0; (stride * (STIPPLE_LEVELS as u64 - 1) + size) as usize],
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                },
+            );
+            let uniforms = gfx::churn::create_bind_group(
+                device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("native world rigid stipple uniforms"),
+                    layout: &uniforms_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &self.buffer,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(VertexUniforms::SIZE as u64),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &pixel,
+                                offset: 0,
+                                size: wgpu::BufferSize::new(size),
+                            }),
+                        },
+                    ],
+                },
+            );
+            let pipelines = WorldPipelines::material(device, &wgsl, layout, WORLD_RIGID_PROGRAM, self.program.inputs)
+                .unwrap_or_else(|| panic!("native world: a rigid program's stipple variant does not validate"));
+            self.stipple = Some(RigidStipple { pipelines, uniforms, pixel, stride });
+        }
+        self.stipple.as_mut().expect("made above")
     }
 
     /// The frame's view and rows in every slot.
@@ -2643,6 +2733,7 @@ impl ProgramSet {
                 stencil,
                 cull,
                 true,
+                false,
                 PipelineUse::Direct,
             );
         }
@@ -2657,6 +2748,7 @@ impl ProgramSet {
         stencil: &wgpu::StencilState,
         cull: InheritedCull,
         cluster: bool,
+        stippled: bool,
         usage: PipelineUse,
     ) -> bool {
         let state = g.program.state.as_ref();
@@ -2672,6 +2764,13 @@ impl ProgramSet {
             ready &= r
                 .pipelines
                 .prepare(device, color, depth, state, c, stencil, usage);
+            if stippled {
+                let state = g.program.state.as_ref();
+                ready &= r
+                    .stipple_for(device, g)
+                    .pipelines
+                    .prepare(device, color, depth, state, c, stencil, usage);
+            }
         }
         ready
     }
@@ -2702,6 +2801,7 @@ impl ProgramSet {
                     stencil,
                     self.cull,
                     selected.cluster,
+                    selected.stippled,
                     usage,
                 );
             } else {
@@ -2723,9 +2823,13 @@ impl ProgramSet {
         for (buffer, offset, bytes) in self.sampled_writes(view, selection) {
             uploads.write(&buffer, offset, &bytes);
         }
+        let bytes = view_bytes(view);
+        for (buffer, offset, block) in self.stipple_writes(view, selection, &bytes[VIEW_PREFIX + 32..]) {
+            uploads.write(&buffer, offset, &block);
+        }
         let (source, start) = uploads
             .arena
-            .stage(uploads.device, uploads.queue, &view_bytes(view));
+            .stage(uploads.device, uploads.queue, &bytes);
         let viewport = start + VIEW_PREFIX as u64;
         for material in selection.materials.keys() {
             if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
@@ -2765,6 +2869,7 @@ impl ProgramSet {
         let (prefix, rest) = bytes.split_at(VIEW_PREFIX);
         let (viewport, pixel) = rest.split_at(32);
         let mut writes = self.sampled_writes(view, selection);
+        writes.extend(self.stipple_writes(view, selection, pixel));
         for material in selection.materials.keys() {
             if selection.constants.contains_key(material) || self.materials[material].program.needs_texaccum() {
                 continue;
@@ -2791,6 +2896,41 @@ impl ProgramSet {
                 offset + VERTEX_VIEW as u64,
                 viewport.to_vec(),
             ));
+        }
+        writes
+    }
+
+    /// The pixel blocks of the faded placements' stipple variants
+    /// ([`RigidStipple`]) for the patterns the selection uses: the
+    /// material's pixel block (sampled as [`ProgramSet::sampled_writes`]
+    /// has it), the frame's scales, the pattern's rows, and the view's
+    /// pixel tail (`pixel`) unless the block is sampled whole.
+    fn stipple_writes(
+        &self,
+        view: &ViewInputs,
+        selection: &crate::gpu::WorldSelection,
+        tail: &[u8],
+    ) -> Vec<(wgpu::Buffer, u64, Vec<u8>)> {
+        let mut writes = Vec::new();
+        let Some(table) = selection.stipple_table() else { return writes };
+        let mut done = HashSet::new();
+        for &(material, instance) in &selection.vertices {
+            let Some(level) = instance.and_then(|n| selection.fade_level(n)) else { continue };
+            if !done.insert((material, level)) { continue; }
+            let Some(s) = self.rigid.get(&material).and_then(|r| r.stipple.as_ref()) else { continue };
+            let program = &self.materials[&material].program;
+            let sampled = selection.constants.get(&material);
+            let size = selection.texaccum.filter(|_| program.needs_texaccum()).map(|t| t.size);
+            let mut pixel = sampled.map_or(program.pixel, |c| c.pixel(&program.pixel));
+            if let Some(size) = size {
+                crate::object_program_gpu::texaccum_scale(&mut pixel, program.texaccum_stages(), size);
+            }
+            pixel.stipple = table[usize::from(level).min(STIPPLE_LEVELS - 1)];
+            let mut bytes = frame_pixel(&pixel, view).to_bytes().to_vec();
+            if sampled.is_none() && size.is_none() {
+                bytes[PIXEL_TAIL..].copy_from_slice(tail);
+            }
+            writes.push((s.pixel.clone(), u64::from(level) * s.stride, bytes));
         }
         writes
     }
@@ -2959,6 +3099,26 @@ impl ProgramSet {
             &r.uniforms,
             r.offset(instance)?,
         ))
+    }
+
+    /// [`ProgramSet::rigid`] for a faded placement: the stipple variant's
+    /// pipeline and uniforms, with the dynamic offsets of the placement's
+    /// vertex slot and of pattern `level`'s pixel block
+    /// ([`STIPPLE_LEVELS`]). `None` while its pipeline is not made.
+    pub(crate) fn rigid_stipple(
+        &self,
+        material: u16,
+        instance: u32,
+        level: u8,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        stencil: &wgpu::StencilState,
+    ) -> Option<(&wgpu::RenderPipeline, &wgpu::BindGroup, [u32; 2])> {
+        let r = self.rigid.get(&material)?;
+        let s = r.stipple.as_ref()?;
+        let cull = self.cull.of(self.materials.get(&material)?.program.inherits_cull, false);
+        let pixel = u32::try_from(u64::from(level.min(STIPPLE_LEVELS as u8 - 1)) * s.stride).ok()?;
+        Some((s.pipelines.get(color, depth, stencil, cull)?, &s.uniforms, [r.offset(instance)?, pixel]))
     }
 
     /// How many materials draw their placements with rigid programs.
@@ -3400,6 +3560,7 @@ mod tests {
             MaterialUse {
                 cluster: true,
                 rigid: false,
+                stippled: false,
             },
         )]
         .into();

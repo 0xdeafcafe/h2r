@@ -571,10 +571,16 @@ pub fn compile_object_stages(
 /// with, its 32 rows in [`PixelUniforms::stipple`]. The vertex half is
 /// the compiled module's own: [`shaders::link`] appends the pixel body.
 pub fn stipple_wgsl(program: &MaterialProgram) -> Result<String, String> {
+    stipple_module(&program.wgsl, program)
+}
+
+/// [`stipple_wgsl`] for another module that ends with `program`'s pixel
+/// shader (its rigid program's: the placements' vertex half, the material's
+/// pixel half).
+pub fn stipple_module(module: &str, program: &MaterialProgram) -> Result<String, String> {
     use shaders::psh::{PixelOptions, translate_with_default_final_uniform as translate};
     let plain = translate(&program.def, &program.pixel_options);
-    let head = program
-        .wgsl
+    let head = module
         .strip_suffix(plain.body.as_str())
         .ok_or("the module does not end with its pixel shader")?;
     let stippled = translate(&program.def, &PixelOptions { stipple: true, ..program.pixel_options });
@@ -1595,6 +1601,20 @@ pub(crate) mod tests {
         assert_eq!(stippled[..vertex], p.wgsl[..vertex], "the vertex half is the module's own");
         let edited = MaterialProgram { wgsl: format!("{}// edited", p.wgsl), ..p };
         assert!(stipple_wgsl(&edited).is_err(), "a module not ending with its pixel shader is refused");
+    }
+
+    /// A rigid program's module (another vertex half over the material's
+    /// pixel shader) takes the same stipple pixel half
+    /// ([`stipple_module`]), which a world placement draws faded with.
+    #[test]
+    fn another_module_over_the_same_pixel_shader_takes_the_stipple_half() {
+        let p = frame_pass(3).program;
+        let fs = p.wgsl.find("@fragment").unwrap();
+        let other = format!("// another vertex half\n{}", &p.wgsl[fs..]);
+        let stippled = stipple_module(&other, &p).unwrap();
+        assert!(stippled.starts_with("// another vertex half\n"), "its own vertex half is kept");
+        assert!(stippled.contains("xps.stipple["));
+        assert_eq!(stippled.len() - other.len(), stipple_wgsl(&p).unwrap().len() - p.wgsl.len());
     }
 
     /// The stencil and transparent programs copy the vertex colour `v10`

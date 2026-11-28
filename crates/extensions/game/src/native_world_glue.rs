@@ -287,7 +287,7 @@ impl Host for Glue {
         self.refresh_edits();
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, fades: &render_bridge::native_world::PlacementFades, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem).ok_or("world_pending")?)
@@ -322,12 +322,16 @@ impl Host for Glue {
         // The parts' selection, or why it does not draw: the GPU world not
         // uploaded, a part or texaccum it cannot bind, an animation that
         // does not read, pipelines still warming.
-        let select = |parts: &[(Owner, u8)]| -> Result<Arc<WorldSelection>, &'static str> {
+        let select = |parts: &[(Owner, u8)], fades: Option<&render_bridge::native_world::PlacementFades>| -> Result<Arc<WorldSelection>, &'static str> {
             let mut guard = ready.gpu();
             let gpu = guard.as_mut().ok_or("gpu_pending")?;
             configure_world(gpu, depth, cull, &stencil);
             // The guest's list whole: the GPU culls it by the lens.
             let mut selection = gpu.select_unculled(parts).ok_or("selection")?;
+            // The placements retail's LOD fade stipples.
+            if let Some(f) = fades && let Some(table) = f.table.as_deref() {
+                gpu.set_fades(&mut selection, &f.levels, table);
+            }
             if !gpu.select_texaccum(&mut selection, accumulation) { return Err("texaccum"); }
             gpu.animate_selection(&mut selection, time).map_err(|_| "animation")?;
             gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection)).ok_or("warming")
@@ -357,7 +361,7 @@ impl Host for Glue {
             // Whole sections only, and none that samples an accumulation
             // no stage wrote (`GpuWorld::display_complete_parts`).
             let parts = ready.gpu().as_ref().map(|gpu| gpu.display_complete_parts(&parts)).unwrap_or_default();
-            if !parts.is_empty() && let Ok(selection) = select(&parts) {
+            if !parts.is_empty() && let Ok(selection) = select(&parts, None) {
                 push(selection);
             }
         }
@@ -374,7 +378,7 @@ impl Host for Glue {
         };
         if selected.is_empty() { return Err("part"); }
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
-        let selection = select(&selected)?;
+        let selection = select(&selected, Some(fades))?;
         drop(planning);
         if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
             timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, selected.len() as u64);
